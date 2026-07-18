@@ -1128,6 +1128,18 @@ wheels = [
 ]
 
 [[package]]
+name = "gunicorn"
+version = "23.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging", marker = "platform_python_implementation != 'PyPy'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/34/72/9614c465dc206155d93eff0ca20d42e1e35afc533971379482de953521a4/gunicorn-23.0.0.tar.gz", hash = "sha256:f014447a0101dc57e294f6c18ca6b40227a4c90e9bdb586042628030cba004ec", size = 375031, upload-time = "2024-08-10T20:25:27.378Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/7d/6dac2a6e1eba33ee43f318edbed4ff29151a49b5d37f080aad1e6469bca4/gunicorn-23.0.0-py3-none-any.whl", hash = "sha256:ec400d38950de4dfd418cff8328b2c8faed0edb0d517d3394e457c317908ca4d", size = 85029, upload-time = "2024-08-10T20:25:24.996Z" },
+]
+
+[[package]]
 name = "h11"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2585,6 +2597,7 @@ dependencies = [
     { name = "graphene", marker = "platform_python_implementation != 'PyPy'" },
     { name = "graphql-core", marker = "platform_python_implementation != 'PyPy'" },
     { name = "graphql-relay", marker = "platform_python_implementation != 'PyPy'" },
+    { name = "gunicorn", marker = "platform_python_implementation != 'PyPy'" },
     { name = "html-to-draftjs", marker = "platform_python_implementation != 'PyPy'" },
     { name = "idna", marker = "platform_python_implementation != 'PyPy'" },
     { name = "kombu", extra = ["sqs"], marker = "platform_python_implementation != 'PyPy'" },
@@ -2624,6 +2637,7 @@ dependencies = [
     { name = "semantic-version", marker = "platform_python_implementation != 'PyPy'" },
     { name = "sendgrid", marker = "platform_python_implementation != 'PyPy'" },
     { name = "sentry-sdk", marker = "platform_python_implementation != 'PyPy'" },
+    { name = "setuptools", marker = "platform_python_implementation != 'PyPy'" },
     { name = "stripe", marker = "platform_python_implementation != 'PyPy'" },
     { name = "text-unidecode", marker = "platform_python_implementation != 'PyPy'" },
     { name = "urllib3", marker = "platform_python_implementation != 'PyPy'" },
@@ -2663,7 +2677,6 @@ dev = [
     { name = "types-redis", marker = "platform_python_implementation != 'PyPy'" },
     { name = "types-requests", marker = "platform_python_implementation != 'PyPy'" },
     { name = "types-six", marker = "platform_python_implementation != 'PyPy'" },
-    { name = "vcrpy", marker = "platform_python_implementation != 'PyPy'" },
 ]
 
 [package.metadata]
@@ -2701,6 +2714,7 @@ requires-dist = [
     { name = "graphene", specifier = "<3.0" },
     { name = "graphql-core", specifier = ">=2.3.2,<3" },
     { name = "graphql-relay", specifier = ">=2.0.1,<3" },
+    { name = "gunicorn", specifier = ">=23.0.0,<24" },
     { name = "html-to-draftjs", specifier = ">=1.0.1,<2" },
     { name = "idna", specifier = ">=3.10" },
     { name = "kombu", extras = ["sqs"], specifier = ">=4.6.11,<6.0.0" },
@@ -2739,7 +2753,8 @@ requires-dist = [
     { name = "rx", specifier = ">=1.6.3,<2" },
     { name = "semantic-version", specifier = ">=2.10.0,<3" },
     { name = "sendgrid", specifier = ">=6.7.1,<7" },
-    { name = "sentry-sdk", specifier = "~=2.12" },
+    { name = "sentry-sdk", specifier = "~=2.66" },
+    { name = "setuptools", specifier = ">=80.9.0,<81" },
     { name = "stripe", specifier = ">=3.0.0,<4" },
     { name = "text-unidecode", specifier = "~=1.2" },
     { name = "urllib3", specifier = ">=2.4.0,<3" },
@@ -2779,7 +2794,6 @@ dev = [
     { name = "types-redis", specifier = ">=4.6.0,<5" },
     { name = "types-requests", specifier = ">=2.32.4,<3" },
     { name = "types-six", specifier = ">=1.17.0,<2" },
-    { name = "vcrpy", specifier = ">=7.0.0,<8" },
 ]
 
 [[package]]
@@ -2807,24 +2821,24 @@ wheels = [
 
 [[package]]
 name = "sentry-sdk"
-version = "2.38.0"
+version = "2.66.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "certifi", marker = "platform_python_implementation != 'PyPy'" },
     { name = "urllib3", marker = "platform_python_implementation != 'PyPy'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b2/22/60fd703b34d94d216b2387e048ac82de3e86b63bc28869fb076f8bb0204a/sentry_sdk-2.38.0.tar.gz", hash = "sha256:792d2af45e167e2f8a3347143f525b9b6bac6f058fb2014720b40b84ccbeb985", size = 348116, upload-time = "2025-09-15T15:00:37.846Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/48/ff/670abe04c5072719b5060ed93851d0d69525d60f8f2c5810f8becd58f9c1/sentry_sdk-2.66.0.tar.gz", hash = "sha256:9727d35aa83c56cd53294676fe65b96296a334c9ce107fa2142bd70f47acb265", size = 935745, upload-time = "2026-07-16T12:42:04.663Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7a/84/bde4c4bbb269b71bc09316af8eb00da91f67814d40337cc12ef9c8742541/sentry_sdk-2.38.0-py2.py3-none-any.whl", hash = "sha256:2324aea8573a3fa1576df7fb4d65c4eb8d9929c8fa5939647397a07179eef8d0", size = 370346, upload-time = "2025-09-15T15:00:35.821Z" },
+    { url = "https://files.pythonhosted.org/packages/c7/bb/49b10783f29067da2eec179320617e94faf63196609de47aeab3c26c3325/sentry_sdk-2.66.0-py3-none-any.whl", hash = "sha256:096136c214c602be2b323524d30755dc5b30ec5a218a206207f33b12c05c6f11", size = 504769, upload-time = "2026-07-16T12:42:02.919Z" },
 ]
 
 [[package]]
 name = "setuptools"
-version = "76.1.0"
+version = "80.10.2"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fa/2b/287ade3a580869e6178cb37d045f54272b1f006f2c0ff6fad08db258d027/setuptools-76.1.0.tar.gz", hash = "sha256:4959b9ad482ada2ba2320c8f1a8d8481d4d8d668908a7a1b84d987375cd7f5bd", size = 1350273, upload-time = "2025-03-18T01:41:51.463Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/76/95/faf61eb8363f26aa7e1d762267a8d602a1b26d4f3a1e758e92cb3cb8b054/setuptools-80.10.2.tar.gz", hash = "sha256:8b0e9d10c784bf7d262c4e5ec5d4ec94127ce206e8738f29a437945fbc219b70", size = 1200343, upload-time = "2026-01-25T22:38:17.252Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/62/fb/47dc84839f2743553075c80d08543b3d0f498f42329141b6717504abcdfd/setuptools-76.1.0-py3-none-any.whl", hash = "sha256:34750dcb17d046929f545dec9b8349fe42bf4ba13ddffee78428aec422dbfb73", size = 1236933, upload-time = "2025-03-18T01:41:49.338Z" },
+    { url = "https://files.pythonhosted.org/packages/94/b8/f1f62a5e3c0ad2ff1d189590bfa4c46b4f3b6e49cef6f26c6ee4e575394d/setuptools-80.10.2-py3-none-any.whl", hash = "sha256:95b30ddfb717250edb492926c92b5221f7ef3fbcc2b07579bcd4a27da21d0173", size = 1064234, upload-time = "2026-01-25T22:38:15.216Z" },
 ]
 
 [[package]]
