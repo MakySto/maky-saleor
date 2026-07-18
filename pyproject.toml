@@ -85,7 +85,7 @@ dependencies = [
   "python-magic>=0.4.27,<0.5 ; sys_platform != 'win32'",
   "python-magic-bin>=0.4.14,<0.5 ; sys_platform == 'win32'",
   "nh3>=0.3.2",
-  "idna>=3.10",
+  "idna>=3.18",
   "gunicorn>=23.0.0,<24",
   "setuptools>=80.9.0,<81"
 ]
