@@ -1,5 +1,9 @@
 # Saleor
 
+> **Prevádzka a nasadzovanie MAKY:** [docs/operations/MAKY-DEPLOYMENT.md](docs/operations/MAKY-DEPLOYMENT.md)
+> — kde beží Core, Dashboard a storefront, presné SHA, S3/CloudFront identity, postup
+> upgradu a rollbacku. **Prečítaj ho pred akýmkoľvek zásahom do produkcie.**
+
 ## Deployment model (read this first)
 
 Saleor is deployed for **horizontal scale-out: many identical Kubernetes pods** (web + Celery
