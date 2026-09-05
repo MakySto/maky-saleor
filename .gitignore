@@ -40,3 +40,4 @@ Pipfile
 
 # Exported results file
 django-queries-results.html
+rsa_private.pem
