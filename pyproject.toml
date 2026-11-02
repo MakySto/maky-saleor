@@ -210,7 +210,13 @@ extend_exclude = [ "conftest\\.py", ".*/conftest\\.py", ".*/tests/.*" ]
   "azure-storage-common",
   "django-redis",
   "psycopg",
-  "pyxb"
+  "pyxb",
+  # MAKY runtime-only deps (docs/operations/MAKY-DEPLOYMENT.md §3.1, §3.3):
+  # gunicorn/setuptools are used by systemd, pytest by test fixtures imported
+  # from saleor/core/utils/random_data.py (excluded from the deptry scan).
+  "gunicorn",
+  "setuptools",
+  "pytest"
 ]
 
 [tool.django-stubs]
