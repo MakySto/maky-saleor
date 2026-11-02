@@ -544,3 +544,13 @@ DB connection stringy ani logy s osobnými údajmi.
 
 Disk je na ~72 %. `/home/ubuntu/build-dashboard-3.23.32` má 1,1 GB (`node_modules`)
 a po úspešnom nasadení sa dá zmazať.
+
+---
+
+## 12. B2B oslobodenie DPH (MAKY-B2B-V1) — 2026-11-02, NENASADENÉ
+
+Vetva `maky-b2b-vat-exemption-v3.23.31` (nad `maky-production-patches-v3.23.31`).
+Bez migrácií a nových závislostí; nový `.env` prepínač `MAKY_B2B_VAT_EXEMPTION_MODE`
+(default `off`). Kontrakt: [MAKY-B2B-V1-CONTRACT.md](MAKY-B2B-V1-CONTRACT.md),
+nasadenie/vypnutie/rollback: [MAKY-B2B-V1-OPERATIONS.md](MAKY-B2B-V1-OPERATIONS.md).
+Po nasadení doplň §0–§1 (nový kódový SHA).

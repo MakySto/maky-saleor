@@ -36,6 +36,7 @@ from .utils import (
     ERROR_CC_ADDRESS_CHANGE_FORBIDDEN,
     check_lines_quantity,
     get_checkout,
+    guard_maky_b2b_context_change,
     mark_checkout_deliveries_as_stale_if_needed,
 )
 
@@ -147,6 +148,7 @@ class CheckoutShippingAddressUpdate(AddressMetadataMixin, BaseMutation, I18nMixi
                 "lines__variant__product__product_type"
             ),
         )
+        guard_maky_b2b_context_change(checkout)
         use_legacy_error_flow_for_checkout = (
             checkout.channel.use_legacy_error_flow_for_checkout
         )

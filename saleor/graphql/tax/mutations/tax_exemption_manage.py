@@ -3,6 +3,7 @@ from typing import Final
 import graphene
 from django.core.exceptions import ValidationError
 
+from ....checkout import maky_b2b
 from ....checkout.fetch import fetch_checkout_info, fetch_checkout_lines
 from ....checkout.models import Checkout
 from ....checkout.utils import invalidate_checkout
@@ -11,6 +12,7 @@ from ....order import ORDER_EDITABLE_STATUS
 from ....order.models import Order
 from ....permission.enums import CheckoutPermissions
 from ....tax import error_codes
+from ...app.dataloaders import get_app_promise
 from ...core import ResolveInfo
 from ...core.context import SyncWebhookControlContext
 from ...core.doc_category import DOC_CATEGORY_TAXES
@@ -90,9 +92,62 @@ class TaxExemptionManage(BaseMutation):
         )
 
     @classmethod
+    def _handle_maky_b2b_checkout(cls, info: ResolveInfo, checkout, tax_exemption):
+        """MAKY-B2B-V1: native flag on checkouts managed by the B2B workflow.
+
+        Returns True when handled here. `true` cannot bypass context, attestation
+        and backend mode; `false` also revokes the attestation, so the flag is
+        not re-enabled by the workflow on the next read.
+        """
+        app = get_app_promise(info.context).get()
+        result = maky_b2b.revoke_for_native_flag(
+            checkout=checkout, tax_exemption=tax_exemption, app=app
+        )
+        if result == "unmanaged":
+            return False
+        if result == maky_b2b.B2bErrorCode.B2B_CHECKOUT_LOCKED:
+            raise ValidationError(
+                {
+                    "id": ValidationError(
+                        maky_b2b.B2bLockedError.message,
+                        code=error_codes.TaxExemptionManageErrorCode.B2B_CHECKOUT_LOCKED.value,
+                    )
+                }
+            )
+        if result == maky_b2b.B2bErrorCode.B2B_MANAGED_CHECKOUT:
+            raise ValidationError(
+                {
+                    "tax_exemption": ValidationError(
+                        "Checkout is managed by the MAKY B2B workflow; use "
+                        "checkoutB2bTaxAttestationUpdate.",
+                        code=error_codes.TaxExemptionManageErrorCode.B2B_MANAGED_CHECKOUT.value,
+                    )
+                }
+            )
+        if result == maky_b2b.B2bErrorCode.NOT_FOUND:
+            raise ValidationError(
+                {
+                    "id": ValidationError(
+                        "Checkout not found.",
+                        code=error_codes.TaxExemptionManageErrorCode.NOT_FOUND.value,
+                    )
+                }
+            )
+        checkout.refresh_from_db()
+        return True
+
+    @classmethod
     def perform_mutation(cls, _root, info: ResolveInfo, /, **data):
         cls.validate_input(info, data)
         obj = cls.get_object(info, data["id"])
+
+        if isinstance(obj, Checkout) and cls._handle_maky_b2b_checkout(
+            info, obj, data["tax_exemption"]
+        ):
+            return TaxExemptionManage(
+                taxable_object=SyncWebhookControlContext(node=obj)
+            )
+
         obj.tax_exemption = data["tax_exemption"]
 
         if isinstance(obj, Checkout):

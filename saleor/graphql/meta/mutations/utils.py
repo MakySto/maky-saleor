@@ -5,6 +5,7 @@ from django.core.exceptions import ValidationError
 from django.db.models import F, Func, JSONField, TextField, Value
 from django.utils import timezone
 
+from ....checkout import maky_b2b
 from ....checkout.models import Checkout, CheckoutMetadata
 from ....checkout.utils import get_or_create_checkout_metadata
 from ....core.db.connection import allow_writer
@@ -178,3 +179,29 @@ def delete_private_metadata_keys(instance, keys: list[str]):
             }
         )
     instance.refresh_from_db(fields=["private_metadata"])
+
+
+def guard_maky_b2b_metadata_change(checkout: Checkout):
+    """MAKY-B2B-V1: B2B input is tax-relevant; respect an active payment lock."""
+    try:
+        maky_b2b.guard_context_change(checkout)
+    except maky_b2b.B2bLockedError as e:
+        raise ValidationError(
+            {
+                "id": ValidationError(
+                    maky_b2b.B2bLockedError.message,
+                    code=MetadataErrorCode.B2B_CHECKOUT_LOCKED.value,
+                )
+            }
+        ) from e
+
+
+def invalidate_checkout_prices_after_b2b_input_change(checkout: Checkout):
+    """MAKY-B2B-V1: public metadata normally does not touch prices; B2B input does."""
+    now = timezone.now()
+    checkout.price_expiration = now
+    checkout.discount_expiration = now
+    checkout.last_change = now
+    Checkout.objects.filter(pk=checkout.pk).update(
+        price_expiration=now, discount_expiration=now, last_change=now
+    )

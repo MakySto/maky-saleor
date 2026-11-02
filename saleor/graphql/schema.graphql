@@ -11005,6 +11005,11 @@ type Checkout implements Node & ObjectWithMetadata @doc(category: "Checkout") {
   """Returns True if checkout has to be exempt from taxes."""
   taxExemption: Boolean!
 
+  """
+  MAKY B2B § 43 tax state of the checkout, evaluated together with the checkout prices of the same response. MAKY fork only (MAKY-B2B-V1).
+  """
+  b2bTaxState: B2bTaxState!
+
   """The checkout's token."""
   token: UUID!
 
@@ -11847,6 +11852,52 @@ type Delivery {
 Represents a delivery method chosen for the checkout. `Warehouse` type is used when checkout is marked as "click and collect" and `ShippingMethod` otherwise.
 """
 union DeliveryMethod = Warehouse | ShippingMethod
+
+"""Summary of the B2B tax state. MAKY fork only (MAKY-B2B-V1)."""
+type B2bTaxState @doc(category: "Checkout") {
+  """
+  Opaque version of the current B2B context and revision. Pass it unchanged as `expectedContextVersion`.
+  """
+  contextVersion: String!
+
+  """Current decision."""
+  decision: B2bTaxDecision!
+
+  """
+  Whether the MAKY B2B § 43 exemption is effective for the prices of this checkout.
+  """
+  effectiveTaxExemption: Boolean!
+
+  """Original time of the stored VIES check."""
+  checkedAt: DateTime
+
+  """Time when a VALID check stops being usable."""
+  expiresAt: DateTime
+
+  """
+  True while a started payment freezes the tax context; company, VAT, address and delivery changes are rejected.
+  """
+  paymentLocked: Boolean!
+}
+
+"""
+Decision of the MAKY automatic B2B § 43 workflow. `TAXED_*` means the automatic exemption is not used and the regular Saleor calculation applies.
+"""
+enum B2bTaxDecision @doc(category: "Checkout") {
+  EXEMPT
+  TAXED_NOT_COMPANY
+  TAXED_NO_VAT_ID
+  TAXED_SK_VAT
+  TAXED_DOMESTIC_DELIVERY
+  TAXED_COUNTRY_MISMATCH
+  TAXED_UNVERIFIED
+  TAXED_INVALID
+  TAXED_UNAVAILABLE
+  TAXED_IDENTITY_REVIEW
+  TAXED_STALE
+  TAXED_DISABLED
+  OUT_OF_SCOPE
+}
 
 scalar UUID
 
@@ -21249,6 +21300,17 @@ type Mutation {
   ): CheckoutAddPromoCode @doc(category: "Checkout") @webhookEventsInfo(asyncEvents: [CHECKOUT_UPDATED], syncEvents: [])
 
   """
+  Atomically stores a B2B VAT verification for the current checkout context, decides the § 43 exemption, sets the native tax exemption and invalidates prices. Requires an active app with both MANAGE_TAXES and HANDLE_TAXES. MAKY fork only (contract MAKY-B2B-V1).
+  """
+  checkoutB2bTaxAttestationUpdate(
+    """The checkout's ID."""
+    id: ID!
+
+    """Attestation to store."""
+    input: CheckoutB2bTaxAttestationInput!
+  ): CheckoutB2bTaxAttestationUpdate @doc(category: "Checkout")
+
+  """
   Updates billing address in the existing checkout.
   
   Triggers the following webhook events:
@@ -23618,6 +23680,8 @@ enum TaxExemptionManageErrorCode @doc(category: "Taxes") {
   INVALID
   NOT_FOUND
   NOT_EDITABLE_ORDER
+  B2B_CHECKOUT_LOCKED
+  B2B_MANAGED_CHECKOUT
 }
 
 """
@@ -26670,6 +26734,8 @@ enum PaymentErrorCode @doc(category: "Payments") {
   NO_CHECKOUT_LINES
   CHECKOUT_COMPLETION_IN_PROGRESS
   CHECKOUT_HAS_TRANSACTION
+  B2B_CHECKOUT_LOCKED
+  B2B_TAX_CONTEXT_CHANGED
 }
 
 """
@@ -27237,6 +27303,8 @@ enum TransactionInitializeErrorCode @doc(category: "Payments") {
   NOT_FOUND
   UNIQUE
   CHECKOUT_COMPLETION_IN_PROGRESS
+  B2B_CHECKOUT_LOCKED
+  B2B_TAX_CONTEXT_CHANGED
 }
 
 """
@@ -29323,6 +29391,7 @@ enum MetadataErrorCode {
   NOT_FOUND
   REQUIRED
   NOT_UPDATED
+  B2B_CHECKOUT_LOCKED
 }
 
 """
@@ -31504,6 +31573,82 @@ enum CheckoutErrorCode @doc(category: "Checkout") {
   NON_REMOVABLE_GIFT_LINE
   SHIPPING_CHANGE_FORBIDDEN
   MISSING_ADDRESS_DATA
+  B2B_CHECKOUT_LOCKED
+  B2B_TAX_CONTEXT_CHANGED
+}
+
+"""
+Atomically stores a B2B VAT verification for the current checkout context, decides the § 43 exemption, sets the native tax exemption and invalidates prices. Requires an active app with both MANAGE_TAXES and HANDLE_TAXES. MAKY fork only (contract MAKY-B2B-V1).
+"""
+type CheckoutB2bTaxAttestationUpdate @doc(category: "Checkout") {
+  """An updated checkout."""
+  checkout: Checkout
+  errors: [CheckoutB2bTaxAttestationError!]!
+}
+
+type CheckoutB2bTaxAttestationError @doc(category: "Checkout") {
+  """
+  Name of a field that caused the error. A value of `null` indicates that the error isn't associated with a particular field.
+  """
+  field: String
+
+  """The error message."""
+  message: String
+
+  """The error code."""
+  code: CheckoutB2bTaxAttestationErrorCode!
+}
+
+"""MAKY-B2B-V1 error codes of `checkoutB2bTaxAttestationUpdate`."""
+enum CheckoutB2bTaxAttestationErrorCode @doc(category: "Checkout") {
+  GRAPHQL_ERROR
+  INVALID
+  NOT_FOUND
+  STALE_CONTEXT
+  INVALID_ATTESTATION
+  CHECKOUT_LOCKED
+  UNMANAGED_EXEMPTION_CONFLICT
+}
+
+"""
+B2B tax attestation for a checkout. MAKY fork only (contract MAKY-B2B-V1).
+"""
+input CheckoutB2bTaxAttestationInput {
+  """`checkout.b2bTaxState.contextVersion` read before the VIES call."""
+  expectedContextVersion: String!
+
+  """Verification result. `null` revokes any previous approval."""
+  verification: CheckoutB2bVatVerificationInput
+}
+
+"""Result of a VIES verification. MAKY fork only (contract MAKY-B2B-V1)."""
+input CheckoutB2bVatVerificationInput {
+  """Full normalized VAT ID including the country prefix."""
+  vatId: String!
+
+  """Result of the VIES verification."""
+  status: B2bVatVerificationStatus!
+
+  """
+  Original time of the VIES check. Reusing a cached result must keep its original time.
+  """
+  checkedAt: DateTime!
+
+  """VIES request identifier, when the service returned one."""
+  requestIdentifier: String
+
+  """Trader name returned by VIES."""
+  name: String
+
+  """Trader address returned by VIES."""
+  address: String
+}
+
+"""Result of a VIES VAT verification."""
+enum B2bVatVerificationStatus {
+  VALID
+  INVALID
+  UNAVAILABLE
 }
 
 """
@@ -32097,6 +32242,8 @@ enum OrderCreateFromCheckoutErrorCode @doc(category: "Orders") {
   NO_LINES
   EMAIL_NOT_SET
   UNAVAILABLE_VARIANT_IN_CHANNEL
+  INVALID
+  B2B_TAX_CONTEXT_CHANGED
 }
 
 """

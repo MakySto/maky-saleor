@@ -18,7 +18,7 @@ from ...plugins.dataloaders import get_plugin_manager_promise
 from ..types import Checkout
 from .checkout_create import CheckoutAddressValidationRules
 from .checkout_shipping_address_update import CheckoutShippingAddressUpdate
-from .utils import get_checkout
+from .utils import get_checkout, guard_maky_b2b_context_change
 
 
 class CheckoutBillingAddressUpdate(CheckoutShippingAddressUpdate):
@@ -86,6 +86,7 @@ class CheckoutBillingAddressUpdate(CheckoutShippingAddressUpdate):
         id=None,
     ):
         checkout = get_checkout(cls, info, checkout_id=checkout_id, token=token, id=id)
+        guard_maky_b2b_context_change(checkout)
 
         address_validation_rules = validation_rules or {}
         billing_address = cls.validate_address(

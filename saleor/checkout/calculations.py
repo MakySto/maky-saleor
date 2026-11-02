@@ -34,7 +34,7 @@ from ..tax.utils import (
     get_tax_calculation_strategy_for_checkout,
     normalize_tax_rate_for_db,
 )
-from . import CheckoutAuthorizeStatus, base_calculations
+from . import CheckoutAuthorizeStatus, base_calculations, maky_b2b
 from .fetch import find_checkout_line_info
 from .lock_objects import checkout_qs_select_for_update
 from .models import Checkout
@@ -383,7 +383,21 @@ def _fetch_checkout_prices_if_expired(
     """
     checkout = checkout_info.checkout
 
-    if not force_update and checkout.price_expiration > timezone.now():
+    # MAKY-B2B-V1: decide whether the native exemption is effective *before*
+    # returning cached prices. Unflagged checkouts cost no extra query.
+    effective_tax_exemption = checkout.tax_exemption
+    if checkout.tax_exemption:
+        with allow_writer_for_default_connection(database_connection_name):
+            effective_tax_exemption = maky_b2b.get_effective_tax_exemption(
+                checkout_info, database_connection_name=database_connection_name
+            )
+    repair_tax_exemption_flag = effective_tax_exemption != checkout.tax_exemption
+
+    if (
+        not force_update
+        and not repair_tax_exemption_flag
+        and checkout.price_expiration > timezone.now()
+    ):
         return Promise.resolve((checkout_info, lines))
 
     tax_configuration = checkout_info.tax_configuration
@@ -402,7 +416,7 @@ def _fetch_checkout_prices_if_expired(
         charge_taxes = get_charge_taxes_for_checkout(
             checkout_info, database_connection_name=database_connection_name
         )
-        should_charge_tax = charge_taxes and not checkout.tax_exemption
+        should_charge_tax = charge_taxes and not effective_tax_exemption
         tax_app_identifier = get_tax_app_identifier_for_checkout(
             checkout_info, database_connection_name
         )
@@ -450,7 +464,12 @@ def _fetch_checkout_prices_if_expired(
                 # to avoid overwriting changes made by the other requests. Skipping the save function does not affect
                 # the query response because it returns the adjusted checkout and line info objects.
                 if checkout.last_change == locked_checkout.last_change:
+                    if repair_tax_exemption_flag:
+                        # MAKY-B2B-V1: managed exemption is no longer effective
+                        # (context, TTL, mode); persist the taxed state.
+                        checkout.tax_exemption = False
                     checkout_update_fields = [
+                        "tax_exemption",
                         "voucher_code",
                         "total_net_amount",
                         "total_gross_amount",

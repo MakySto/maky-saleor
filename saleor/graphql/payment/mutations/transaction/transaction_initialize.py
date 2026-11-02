@@ -6,6 +6,7 @@ from django.core.exceptions import ValidationError
 
 from .....app.models import App
 from .....channel.models import Channel
+from .....checkout import maky_b2b
 from .....checkout import models as checkout_models
 from .....checkout.utils import activate_payments, cancel_active_payments
 from .....core.exceptions import PermissionDenied
@@ -188,11 +189,22 @@ class TransactionInitialize(TransactionSessionBase):
             error_code=TransactionInitializeErrorCode.INVALID.value,
         )
 
+        requested_amount = amount
         amount = cls.get_amount(
             source_object,
             amount,
         )
         app = cls.clean_app_from_payment_gateway(payment_gateway_data)
+        if isinstance(source_object, checkout_models.Checkout):
+            b2b_amount = cls.prepare_maky_b2b_payment_attempt(
+                source_object,
+                manager=manager,
+                requested_amount=requested_amount,
+                idempotency_key=idempotency_key,
+                payment_gateway_data=payment_gateway_data,
+            )
+            if b2b_amount is not None:
+                amount = b2b_amount
         payment_ids = []
         if isinstance(source_object, checkout_models.Checkout):
             # Deactivate active payment objects to avoid processing checkout
@@ -224,6 +236,49 @@ class TransactionInitialize(TransactionSessionBase):
                 }
             ) from e
         return cls(transaction=transaction, transaction_event=event, data=data)
+
+    @staticmethod
+    def prepare_maky_b2b_payment_attempt(
+        checkout: checkout_models.Checkout,
+        *,
+        manager,
+        requested_amount,
+        idempotency_key: str,
+        payment_gateway_data: PaymentGatewayData,
+    ):
+        """MAKY-B2B-V1: freeze tax regime and amount before contacting the PSP."""
+        try:
+            return maky_b2b.prepare_payment_attempt(
+                checkout=checkout,
+                manager=manager,
+                requested_amount=requested_amount,
+                attempt={
+                    "type": "transaction",
+                    "idempotencyKey": idempotency_key,
+                    "app": payment_gateway_data.app_identifier,
+                },
+                allow_partial=(
+                    payment_gateway_data.app_identifier == GIFT_CARD_PAYMENT_GATEWAY_ID
+                ),
+            )
+        except maky_b2b.B2bLockedError as e:
+            raise ValidationError(
+                {
+                    "id": ValidationError(
+                        maky_b2b.B2bLockedError.message,
+                        code=TransactionInitializeErrorCode.B2B_CHECKOUT_LOCKED.value,
+                    )
+                }
+            ) from e
+        except maky_b2b.B2bContextChangedError as e:
+            raise ValidationError(
+                {
+                    "amount": ValidationError(
+                        e.message,
+                        code=TransactionInitializeErrorCode.B2B_TAX_CONTEXT_CHANGED.value,
+                    )
+                }
+            ) from e
 
     @staticmethod
     def validate_checkout(checkout: checkout_models.Checkout) -> None:

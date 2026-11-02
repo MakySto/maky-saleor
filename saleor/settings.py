@@ -1010,6 +1010,19 @@ JWT_TTL_REQUEST_EMAIL_CHANGE = datetime.timedelta(
 CHECKOUT_PRICES_TTL = datetime.timedelta(
     seconds=parse(os.environ.get("CHECKOUT_PRICES_TTL", "1 hour"))
 )
+# MAKY-B2B-V1: authoritative backend policy for new automatic § 43 exemptions.
+# Only the exact value "on" enables new grants; anything else means "off".
+MAKY_B2B_VAT_EXEMPTION_MODE = (
+    "on"
+    if os.environ.get("MAKY_B2B_VAT_EXEMPTION_MODE", "off").strip().lower() == "on"
+    else "off"
+)
+# How long a started B2B payment attempt without any money known to Saleor keeps
+# the checkout's tax context frozen.
+MAKY_B2B_PAYMENT_LOCK_TTL_SECONDS = int(
+    parse(os.environ.get("MAKY_B2B_PAYMENT_LOCK_TTL", "20 minutes"))
+)
+
 CHECKOUT_DELIVERY_OPTIONS_TTL = datetime.timedelta(
     seconds=parse(os.environ.get("CHECKOUT_DELIVERY_OPTIONS_TTL", "24 hours"))
 )

@@ -31,6 +31,7 @@ from ..types import Checkout
 from .utils import (
     ERROR_DOES_NOT_SHIP,
     get_checkout,
+    guard_maky_b2b_context_change,
 )
 
 if TYPE_CHECKING:
@@ -214,6 +215,7 @@ class CheckoutDeliveryMethodUpdate(BaseMutation):
         delivery_method_id=None,
     ):
         checkout = get_checkout(cls, info, checkout_id=None, token=token, id=id)
+        guard_maky_b2b_context_change(checkout)
 
         use_legacy_error_flow_for_checkout = (
             checkout.channel.use_legacy_error_flow_for_checkout

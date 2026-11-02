@@ -14,7 +14,7 @@ from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.utils import timezone
 from prices import Money
 
-from ....checkout import models
+from ....checkout import maky_b2b, models
 from ....checkout.delivery_context import is_shipping_required
 from ....checkout.error_codes import CheckoutErrorCode
 from ....checkout.fetch import CheckoutLineInfo
@@ -634,3 +634,18 @@ def _set_checkout_base_subtotal_and_total_on_checkout_creation(
     # delivery method during checkout creation
     checkout.base_total = checkout.base_subtotal
     checkout.save(update_fields=["base_subtotal_amount", "base_total_amount"])
+
+
+def guard_maky_b2b_context_change(checkout: models.Checkout, field: str = "id"):
+    """MAKY-B2B-V1: reject tax-relevant changes during an active B2B payment."""
+    try:
+        maky_b2b.guard_context_change(checkout)
+    except maky_b2b.B2bLockedError as e:
+        raise ValidationError(
+            {
+                field: ValidationError(
+                    maky_b2b.B2bLockedError.message,
+                    code=CheckoutErrorCode.B2B_CHECKOUT_LOCKED.value,
+                )
+            }
+        ) from e
