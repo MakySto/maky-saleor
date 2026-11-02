@@ -37,7 +37,7 @@ a `Order.private_metadata`.
 
 | Premenná | Default | Význam |
 |---|---|---|
-| `MAKY_B2B_VAT_EXEMPTION_MODE` | `off` | `on` povolí nové automatické oslobodenia. Iná hodnota = `off`. |
+| `MAKY_B2B_VAT_EXEMPTION_MODE` | `off` | `on` povolí nové automatické oslobodenia. `drain` = `off` a navyše sa žiadny checkout nestane spravovaným (iba príprava rollbacku, §5). Iná hodnota = `off`. |
 | `MAKY_B2B_PAYMENT_ATTEMPT_GRACE` | `5 minutes` | len pre pokus zo snapshotu, ku ktorému **nevznikla transakcia**: po tejto dobe platí, že Stripe nebol kontaktovaný (Saleor vytvára transakciu pred volaním app). Musí byť dlhšia než najdlhší možný request (`gunicorn --timeout`). Na pokus, ktorý Stripe dosiahol, nemá vplyv. |
 
 `MAKY_B2B_PAYMENT_LOCK_TTL` z revízie 1 je zrušená (čas zámok neuvoľňuje).
@@ -80,7 +80,7 @@ storefront `B2B_CHECKOUT_UI_ENABLED=true`.
 
 ## 4. Vypnutie
 
-Dve rôzne páky, nezamieňať:
+Dve rôzne páky, nezamieňať (režim `drain` slúži iba na prípravu rollbacku, §5):
 
 - **Storefront `B2B_CHECKOUT_UI_ENABLED=false`** iba skryje vstup a prestane volať
   B2B mutácie. **Neodvolá** oslobodenia už zapísané v Saleore.
@@ -94,71 +94,73 @@ Dve rôzne páky, nezamieňať:
 
 ## 5. Rollback na Core bez tohto patchu
 
-Nie je to iba „checkout starého commitu a reštart“: starý kód by rešpektoval každý
-natívny `tax_exemption=true` vrátane zastaraných B2B schválení a nevidel by platobné
-snapshoty. Samotné čakanie (TTL) nestačí. Postup najprv over v izolovanom prostredí.
+Starý Core nepozná B2B stav: rešpektoval by každý natívny `tax_exemption=true`
+vrátane B2B schválení a nevidí platobné snapshoty ani kontrolu potvrdenej ponuky.
+Preto platí jedno pravidlo: **kód sa prepne späť, až keď neexistuje žiadny
+spravovaný checkout.** Kým má niektorý spravovaný checkout aktívny alebo
+nevyjasnený pokus o platbu, zostáva nový Core (režim `drain`, inak `off`). Výnimky
+pre „vedome ponechané platby“ neexistujú. Samotné čakanie nestačí. Postup najprv
+over v izolovanom prostredí; **produkčný cleanup sa bez Marekovho schválenia
+nespúšťa.**
 
-1. **Zastaviť nové oslobodenia:** §4 (backend `off` + reštart), storefront UI `off`.
-2. **Inventúra** (read-only) — spravované checkouty s natívnym príznakom a stav ich
-   pokusov o platbu:
+Nástroj: `manage.py maky_b2b_rollback check|unmanage` (spúšťať v prostredí služby
+`saleor`, s jej `.env`). Pokusy o platbu klasifikuje tá istá funkcia
+`get_payment_attempts`, ktorá stráži zmeny checkoutu, takže inventúra vidí presne
+to, čo backend: transakcie s peniazmi, transakcie bez peňazí bez `CANCEL_SUCCESS` /
+plnej refundácie, aj pokus uložený v snapshote, ku ktorému ešte nevznikla
+transakcia (počas `MAKY_B2B_PAYMENT_ATTEMPT_GRACE`). Zahŕňa všetky spravované
+checkouty, aj tie s `tax_exemption=false` (napr. zdanené po VIES INVALID) a aj
+stav s neplatným podpisom.
 
-   ```sql
-   SELECT c.token,
-          c.last_change,
-          count(t.id)                                              AS transactions,
-          count(t.id) FILTER (WHERE t.authorized_value > 0 OR t.charged_value > 0
-                               OR t.authorize_pending_value > 0
-                               OR t.charge_pending_value > 0)      AS with_money,
-          count(t.id) FILTER (WHERE t.authorized_value = 0 AND t.charged_value = 0
-                               AND t.authorize_pending_value = 0
-                               AND t.charge_pending_value = 0
-                               AND NOT EXISTS (
-                                 SELECT 1 FROM payment_transactionevent e
-                                 WHERE e.transaction_id = t.id
-                                   AND e.type IN ('cancel_success', 'refund_success')))
-                                                                   AS unresolved
-   FROM checkout_checkout c
-   JOIN checkout_checkoutmetadata m ON m.checkout_id = c.token
-   LEFT JOIN payment_transactionitem t ON t.checkout_id = c.token
-   WHERE c.tax_exemption
-     AND m.private_metadata ? 'maky.b2b.state.v1'
-   GROUP BY c.token, c.last_change
-   ORDER BY with_money DESC, unresolved DESC;
-   ```
+1. **Režim `drain`:** storefront `B2B_CHECKOUT_UI_ENABLED=false`; backend
+   `MAKY_B2B_VAT_EXEMPTION_MODE=drain` + reštart `saleor-celerybeat` → `saleor` →
+   `saleor-celery`; účinnú hodnotu over v bežiacom procese (§2). `drain` sa správa
+   ako `off` a navyše **žiadny checkout sa nestane spravovaným** (atestácia na
+   nespravovanom checkoute nič nezapíše a vráti `TAXED_DISABLED`). Platobný snapshot
+   vzniká iba na spravovanom checkoute, takže množina spravovaných checkoutov odteraz
+   iba klesá.
+2. **Inventúra (read-only):** `manage.py maky_b2b_rollback check`. Vypíše režim a pre
+   každý spravovaný checkout `tax_exemption`, rozhodnutie, platnosť podpisu,
+   `attempts` (`FUNDS` / `UNRESOLVED` / `NONE`), transakcie s peniazmi a nevyjasnené
+   transakcie (`id:pspReference`) a `being_created`. Výpis ulož ako podklad.
+   Neobsahuje IČ DPH ani meno firmy.
+3. **Vyriešiť platby** — iba ručne, po jednej, nič hromadne:
+   - `FUNDS`: zákazník dokončí objednávku (zmrazená ponuka, kontrola pri dokončení
+     platí), alebo po dohode zrušenie/refundácia v Dashboarde/Stripe. Žiadne
+     automatické refundácie.
+   - `UNRESOLVED` s transakciou: `checkoutB2bPaymentLockRelease` (B2B app token)
+     alebo zrušenie PaymentIntentu v Stripe (§7); čakať na `CANCEL_SUCCESS`.
+   - `UNRESOLVED` iba s `being_created`: počkať, kým request dobehne (najviac
+     `MAKY_B2B_PAYMENT_ATTEMPT_GRACE`), a zopakovať inventúru.
+4. **Cielené odpojenie:** `manage.py maky_b2b_rollback unmanage` (odmietne sa mimo
+   režimu `drain`). Každý spravovaný checkout spracuje v **samostatnej krátkej
+   transakcii pod zámkom riadku checkoutu**, tým istým, ktorý berie
+   `transactionInitialize`: ak `get_payment_attempts` vráti iné než `NONE`, checkout
+   ostane nezmenený (`BLOCKED`); inak odstráni B2B stav, odvolá natívne oslobodenie,
+   ktoré nastavil workflow, a invaliduje ceny (`UNMANAGED`). Platba, ktorá súbežne
+   začína, teda buď vidí obyčajný zdanený checkout, alebo checkout ostane `BLOCKED`.
+   Nemení: transakcie, verejný vstup `maky.b2b.input.v1`, generické výnimky
+   (`tax_exemption` bez B2B stavu), objednávky a ich `maky.b2b.order.v1`.
+5. Kroky 2 až 4 opakovať, kým `check` neskončí `READY: no managed checkout is left.`
+   (návratový kód 0; mimo `drain` alebo so zostávajúcim spravovaným checkoutom končí
+   chybou `NOT READY`).
+6. **Prepnúť kód späť** a reštartovať tri služby. Medzi krokom 5 a prepnutím
+   nevznikne nový B2B pokus: v `drain` sa žiadny checkout nestane spravovaným a
+   nespravovaný checkout snapshot nedostane. Nespravované platby počas prechodu sú
+   bežné zdanené platby, ktoré starý Core spracuje ako doteraz. Počas postupného
+   reštartu môžu chvíľu bežať staré procesy s `drain` a nové bez patchu; oba stavy
+   sú bezpečné.
+7. Ak sa v kroku 3 platbu vyriešiť nedá, návrat sa **nerobí**; zostáva nový Core
+   s `drain` alebo `off`. Historické objednávky sa nemenia.
 
-   Zoznam ulož (token, počty) ako podklad rozhodnutia.
-3. **Vyriešiť platby** — pre každý riadok:
-   - `with_money > 0`: nechať zákazníka dokončiť objednávku (zmrazený režim), alebo
-     po dohode zrušiť/refundovať v Dashboarde/Stripe. **Nezahŕňať do cleanupu.**
-   - `unresolved > 0`: `checkoutB2bPaymentLockRelease` (B2B app token) alebo zrušenie
-     PaymentIntentu v Stripe (§7); počkať na `CANCEL_SUCCESS`.
-   - Inventúru (krok 2) zopakovať, kým sú v cleanupe len riadky s `with_money = 0` a
-     `unresolved = 0`.
-4. **Cielený cleanup** — iba spravované checkouty bez peňazí a bez nevyjasneného
-   pokusu; generické výnimky (bez `maky.b2b.state.v1`) a historické objednávky sa
-   nemenia:
+Krížová kontrola po kroku 5 (read-only, nezávislá od Pythonu):
 
-   ```sql
-   UPDATE checkout_checkout c
-   SET tax_exemption = false, price_expiration = now(), last_change = now()
-   FROM checkout_checkoutmetadata m
-   WHERE m.checkout_id = c.token
-     AND c.tax_exemption
-     AND m.private_metadata ? 'maky.b2b.state.v1'
-     AND NOT EXISTS (
-       SELECT 1 FROM payment_transactionitem t
-       WHERE t.checkout_id = c.token
-         AND (t.authorized_value > 0 OR t.charged_value > 0
-              OR t.authorize_pending_value > 0 OR t.charge_pending_value > 0
-              OR NOT EXISTS (
-                SELECT 1 FROM payment_transactionevent e
-                WHERE e.transaction_id = t.id
-                  AND e.type IN ('cancel_success', 'refund_success'))));
-   ```
-5. **Overiť:** inventúra (krok 2) neobsahuje riadok s `with_money = 0` a
-   `unresolved = 0`; zostávajúce riadky sú vedome ponechané platby.
-6. Až potom prepnúť kód späť a reštartovať tri služby.
-7. Historické objednávky sa nemenia. Ich `maky.b2b.order.v1` zostáva ako záznam.
+```sql
+SELECT count(*) FROM checkout_checkoutmetadata
+WHERE private_metadata ? 'maky.b2b.state.v1'
+   OR private_metadata ?| array['b2b_vies_valid', 'b2b_vat_country'];
+-- očakávané: 0
+```
 
 ## 6. Údaje pre ručnú faktúru
 
@@ -232,6 +234,7 @@ mode + storefront PR #84 s `B2B_CHECKOUT_UI_ENABLED=true` a backend
 | 10 | Overenie vyprší (24 h, `freeze`/posun času) počas začatej platby | platba dokončí oslobodenú ponuku (zmrazený snapshot) |
 | 11 | `MAKY_B2B_VAT_EXEMPTION_MODE=off` počas začatej platby | platba dokončí zmrazenú ponuku; nový košík `TAXED_DISABLED` |
 | 12 | Neskorý webhook (zastaviť Stripe CLI forwarding, potvrdiť platbu, po 30 min obnoviť) | zámok celý čas aktívny; po príchode peňazí objednávka s pôvodnou ponukou |
+| 13 | Príprava rollbacku (§5): `drain`, otvorená platba z 4, `check` → `release` → `CANCEL_SUCCESS` → `unmanage` → `check` | prvý `check` `NOT READY` s `UNRESOLVED`; po zrušení `unmanage` vráti `UNMANAGED`, druhý `check` `READY`; nová atestácia checkout nespravuje |
 
 Výsledky zapisovať oddelene od automatických testov (tie používajú mock platobnej
 app a nič neposielajú do Stripe).

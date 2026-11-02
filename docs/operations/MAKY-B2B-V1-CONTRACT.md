@@ -25,6 +25,19 @@ kódy zostávajú. Zmenilo sa správanie platobného zámku a pribudla jedna mut
 | 5 | `checkoutComplete` porovná objednávku s potvrdenou ponukou (mena, suma, tovar, kupón, daňový kontext). Nezhoda → `B2B_TAX_CONTEXT_CHANGED` aj vtedy, keď je zaplatené **viac**. | Zobraziť „Suma sa zmenila, objednávka nevznikla“; peniaze uvoľní existujúci mechanizmus Saleoru. |
 | 6 | Kontrola zámku a zápis zmeny sú jedna transakcia pod zámkom checkoutu. | Nič; súbežná platba buď vidí nové údaje, alebo je zmena odmietnutá. |
 | 7 | Premenná `MAKY_B2B_PAYMENT_LOCK_TTL` zrušená, nahradila ju `MAKY_B2B_PAYMENT_ATTEMPT_GRACE` (backend). | Nič. |
+| 8 | Nový režim backendu `drain` (iba príprava návratu na starý Core). Atestácia na nespravovanom checkoute vtedy nič nezapíše a vráti `TAXED_DISABLED`, bez chyby. | Nič; storefront UI je v tom čase vypnuté. |
+
+**Čo musí storefront doplniť pred zapnutím B2B.** Schéma je spätne kompatibilná:
+existujúce volania fungujú bez zmeny a storefront s vypnutým B2B UI možno nasadiť.
+Pred zapnutím (`B2B_CHECKOUT_UI_ENABLED=true`) však storefront **musí** dopojiť
+obnovu po neúspešnej platbe podľa bodu 2: v stave `paymentLocked=true` akciu „Zmeniť
+údaje“, serverové volanie `checkoutB2bPaymentLockRelease` B2B app tokenom (token
+zostáva na serveri), spracovanie `RELEASED` / `CANCELATION_REQUESTED` /
+`ATTEMPT_BEING_CREATED` / `PAYMENT_HAS_FUNDS` a povolenie zmeny údajov až po
+`paymentLocked=false`. Bez toho zákazník po odmietnutej karte nemôže zmeniť adresu
+(backend zmenu správne odmietne). Žiadna automatická refundácia ani automatický nový
+košík či nová platba. Komentáre a testy, ktoré počítajú s uvoľnením zámku časom
+(revízia 1: 20 minút), treba odstrániť.
 
 ## 1. Čo storefront robí a čo nie
 
@@ -300,7 +313,7 @@ Chyba (zmena v druhej karte medzi čítaním verzie a mutáciou):
 | `TAXED_UNAVAILABLE` | VIES nedostupný | skúsiť neskôr alebo pokračovať s DPH (bez sľubu vrátenia) |
 | `TAXED_IDENTITY_REVIEW` | VIES vrátil meno, ktoré sa nezhoduje s firmou | s DPH, kontakt na obchod |
 | `TAXED_STALE` | overenie nesedí na aktuálne údaje alebo vypršalo | znova overiť (nová verzia) |
-| `TAXED_DISABLED` | backend `MAKY_B2B_VAT_EXEMPTION_MODE=off` | s DPH |
+| `TAXED_DISABLED` | backend `MAKY_B2B_VAT_EXEMPTION_MODE=off` alebo `drain` | s DPH |
 | `OUT_OF_SCOPE` | doručenie mimo EÚ (US/CA) | existujúci vývozný režim, nič neoverovať |
 
 Poradie vyhodnotenia: mimo EÚ → firma → VAT → SK VAT → formát VAT → domáce

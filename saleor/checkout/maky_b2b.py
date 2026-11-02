@@ -72,6 +72,9 @@ MAX_EVENTS = 20
 
 MODE_ON = "on"
 MODE_OFF = "off"
+# Preparation of a rollback to a Core without this patch: like "off", and in
+# addition no checkout becomes managed (see ``maky_b2b_rollback``).
+MODE_DRAIN = "drain"
 
 # EU member states (ISO 3166-1 alpha-2). VAT prefix for Greece is "EL".
 EU_COUNTRIES = frozenset(
@@ -158,7 +161,8 @@ class B2bErrorCode:
 
 def get_mode() -> str:
     value = str(getattr(settings, "MAKY_B2B_VAT_EXEMPTION_MODE", MODE_OFF))
-    return MODE_ON if value.strip().lower() == MODE_ON else MODE_OFF
+    value = value.strip().lower()
+    return value if value in (MODE_ON, MODE_DRAIN) else MODE_OFF
 
 
 def get_payment_attempt_grace() -> datetime.timedelta:
@@ -963,7 +967,7 @@ def write_state(
     return data
 
 
-def _invalidate_prices(checkout: Checkout, tax_exemption: bool, now) -> None:
+def invalidate_prices(checkout: Checkout, tax_exemption: bool, now) -> None:
     checkout.tax_exemption = tax_exemption
     checkout.price_expiration = now
     checkout.discount_expiration = now
@@ -1098,6 +1102,10 @@ def apply_attestation(
                 B2bErrorCode.UNMANAGED_EXEMPTION_CONFLICT,
                 "Checkout has a tax exemption not managed by the B2B workflow.",
             )
+        if not state.managed and get_mode() == MODE_DRAIN:
+            # Rollback preparation: the set of managed checkouts may only
+            # shrink. The response shows TAXED_DISABLED as in mode "off".
+            return AttestationResult(checkout=checkout)
 
         structural = structural_decision(context)
         if structural == Decision.OUT_OF_SCOPE:
@@ -1114,7 +1122,7 @@ def apply_attestation(
                     now=now,
                 )
                 if checkout.tax_exemption:
-                    _invalidate_prices(checkout, False, now)
+                    invalidate_prices(checkout, False, now)
             return AttestationResult(checkout=checkout)
 
         attestation = None
@@ -1155,7 +1163,7 @@ def apply_attestation(
             event="attestation" if verification is not None else "revoke",
             now=now,
         )
-        _invalidate_prices(checkout, exempt, now)
+        invalidate_prices(checkout, exempt, now)
     logger.info(
         "MAKY B2B attestation stored",
         extra={"checkout_id": str(checkout.pk), "decision": decision},
@@ -1190,7 +1198,7 @@ def revoke_for_native_flag(
         if tax_exemption:
             if live_decision(context, state, now) == Decision.EXEMPT:
                 if not locked.tax_exemption:
-                    _invalidate_prices(locked, True, now)
+                    invalidate_prices(locked, True, now)
                 checkout.tax_exemption = True
                 return None
             return B2bErrorCode.B2B_MANAGED_CHECKOUT
@@ -1204,7 +1212,7 @@ def revoke_for_native_flag(
             event="native_revoke",
             now=now,
         )
-        _invalidate_prices(locked, False, now)
+        invalidate_prices(locked, False, now)
         checkout.tax_exemption = False
     return None
 

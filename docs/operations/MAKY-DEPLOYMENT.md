@@ -551,8 +551,10 @@ a po úspešnom nasadení sa dá zmazať.
 
 Vetva `maky-b2b-vat-exemption-v3.23.31` (nad `maky-production-patches-v3.23.31`).
 Bez migrácií a nových závislostí; nový `.env` prepínač `MAKY_B2B_VAT_EXEMPTION_MODE`
-(default `off`) a `MAKY_B2B_PAYMENT_ATTEMPT_GRACE` (default 5 min, dlhšie než
-gunicorn timeout). PR #16 obsahuje aj zosúladenie `uv.lock` s `pyproject.toml`
+(default `off`; `drain` iba pri príprave návratu) a `MAKY_B2B_PAYMENT_ATTEMPT_GRACE`
+(default 5 min, dlhšie než gunicorn timeout). **Návrat na Core bez patchu** len po
+`manage.py maky_b2b_rollback check` → `READY` (OPERATIONS §5), nikdy s otvorenými
+B2B platbami. PR #16 obsahuje aj zosúladenie `uv.lock` s `pyproject.toml`
 (gunicorn, setuptools, vcrpy 8 z §3.1) — iba lock pre CI, produkčný venv sa nemení.
 Stripe app potrebuje webhook `TRANSACTION_CANCELATION_REQUESTED` (obnova zámku). Kontrakt: [MAKY-B2B-V1-CONTRACT.md](MAKY-B2B-V1-CONTRACT.md),
 nasadenie/vypnutie/rollback: [MAKY-B2B-V1-OPERATIONS.md](MAKY-B2B-V1-OPERATIONS.md).

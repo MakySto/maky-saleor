@@ -11,7 +11,7 @@ from django.utils import timezone
 from freezegun import freeze_time
 from prices import Money
 
-from ....checkout import maky_b2b, maky_b2b_payment
+from ....checkout import maky_b2b, maky_b2b_payment, maky_b2b_rollback
 from ....checkout.calculations import fetch_checkout_data
 from ....checkout.error_codes import CheckoutErrorCode
 from ....checkout.fetch import fetch_checkout_info, fetch_checkout_lines
@@ -946,3 +946,84 @@ def test_guard_requires_the_transaction_of_the_change(maky_b2b_checkout):
     # when / then
     with pytest.raises(RuntimeError):
         maky_b2b.guard_context_change(maky_b2b_checkout.pk)
+
+
+@pytest.mark.django_db(transaction=True)
+@mock.patch("saleor.plugins.manager.PluginsManager.transaction_initialize_session")
+def test_concurrent_payment_first_rollback_unmanage_is_blocked(
+    mocked_initialize, managed_taxed_checkout, stripe_test_app, settings
+):
+    # given - rollback preparation; a payment holds the checkout lock and is paused
+    settings.MAKY_B2B_VAT_EXEMPTION_MODE = maky_b2b.MODE_DRAIN
+    mocked_initialize.return_value = _session_result("CHARGE_ACTION_REQUIRED", "154.98")
+    checkout = managed_taxed_checkout
+    inside, go, results = threading.Event(), threading.Event(), {}
+    with mock.patch(
+        "saleor.checkout.maky_b2b_payment.fetch_checkout_data",
+        _paused(fetch_checkout_data, inside, go),
+    ):
+        payment = _in_thread(
+            lambda: ApiClient(user=None).post_graphql(
+                TRANSACTION_INITIALIZE,
+                {
+                    "id": _id(checkout),
+                    "amount": None,
+                    "paymentGateway": {"id": APP_IDENTIFIER, "data": None},
+                },
+            ),
+            results,
+            "payment",
+        )
+        assert inside.wait(THREAD_TIMEOUT)
+
+        # when - unmanaging the checkout arrives while the snapshot is written
+        unmanage = _in_thread(
+            lambda: maky_b2b_rollback.unmanage_checkout(checkout.pk),
+            results,
+            "unmanage",
+        )
+        unmanage.join(timeout=1)
+        unmanage_waited_for_payment = unmanage.is_alive()
+        go.set()
+        payment.join(THREAD_TIMEOUT)
+        unmanage.join(THREAD_TIMEOUT)
+
+    # then - the checkout stays managed until its payment attempt is resolved
+    assert unmanage_waited_for_payment is True
+    payment_data = get_graphql_content(results["payment"])["data"]
+    assert payment_data["transactionInitialize"]["errors"] == []
+    assert results["unmanage"].status == maky_b2b_rollback.UnmanageStatus.BLOCKED
+    assert results["unmanage"].attempts.status == maky_b2b.PaymentAttempts.UNRESOLVED
+    metadata = CheckoutMetadata.objects.get(checkout=checkout)
+    assert maky_b2b.STATE_KEY in metadata.private_metadata
+    assert [item.checkout_pk for item in maky_b2b_rollback.inventory()] == [checkout.pk]
+
+
+@mock.patch("saleor.plugins.manager.PluginsManager.transaction_initialize_session")
+def test_drain_mode_after_unmanage_nothing_becomes_managed_again(
+    mocked_initialize, exempt_checkout, stripe_test_app, app, api_client, settings
+):
+    # given - rollback preparation unmanaged the only B2B checkout
+    settings.MAKY_B2B_VAT_EXEMPTION_MODE = maky_b2b.MODE_DRAIN
+    result = maky_b2b_rollback.unmanage_checkout(exempt_checkout.pk)
+    assert result.status == maky_b2b_rollback.UnmanageStatus.UNMANAGED
+    mocked_initialize.return_value = _session_result("CHARGE_ACTION_REQUIRED", "154.98")
+
+    # when - the storefront sends a new attestation and the customer pays
+    attestation = maky_b2b.apply_attestation(
+        checkout_pk=exempt_checkout.pk,
+        expected_context_version=maky_b2b_context_version(exempt_checkout),
+        verification=maky_b2b_verification(),
+        app=app,
+    )
+    payment = _initialize(api_client, exempt_checkout)
+
+    # then - an ordinary taxed payment, the inventory stays empty
+    assert payment["errors"] == []
+    assert attestation.error_code is None
+    exempt_checkout.refresh_from_db(fields=["tax_exemption"])
+    assert exempt_checkout.tax_exemption is False
+    assert TransactionItem.objects.get(
+        checkout_id=exempt_checkout.pk
+    ).psp_reference == ("pi_test_123")
+    assert maky_b2b_rollback.inventory() == []

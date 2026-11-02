@@ -1011,12 +1011,14 @@ CHECKOUT_PRICES_TTL = datetime.timedelta(
     seconds=parse(os.environ.get("CHECKOUT_PRICES_TTL", "1 hour"))
 )
 # MAKY-B2B-V1: authoritative backend policy for new automatic § 43 exemptions.
-# Only the exact value "on" enables new grants; anything else means "off".
+# Only the exact value "on" enables new grants. "drain" (rollback preparation)
+# behaves like "off" and in addition no checkout becomes managed. Anything else
+# means "off".
 MAKY_B2B_VAT_EXEMPTION_MODE = (
-    "on"
-    if os.environ.get("MAKY_B2B_VAT_EXEMPTION_MODE", "off").strip().lower() == "on"
-    else "off"
+    os.environ.get("MAKY_B2B_VAT_EXEMPTION_MODE", "off").strip().lower()
 )
+if MAKY_B2B_VAT_EXEMPTION_MODE not in ("on", "drain"):
+    MAKY_B2B_VAT_EXEMPTION_MODE = "off"
 # A B2B payment snapshot whose transaction was never created is treated as "the
 # payment provider was never contacted" only after this grace period. It must be
 # longer than the longest possible transactionInitialize request (gunicorn
