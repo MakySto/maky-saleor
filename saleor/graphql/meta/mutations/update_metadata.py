@@ -14,8 +14,8 @@ from ..permissions import PUBLIC_META_PERMISSION_MAP
 from .base import BaseMetadataMutation
 from .utils import (
     get_valid_metadata_instance,
-    guard_maky_b2b_metadata_change,
     invalidate_checkout_prices_after_b2b_input_change,
+    maky_b2b_guarded_metadata_change,
     update_metadata,
 )
 
@@ -51,20 +51,26 @@ class UpdateMetadata(BaseMetadataMutation):
                 input, error_field_name="input", private=False
             )
             items = {data.key: data.value for data in input}
-            if isinstance(instance, Checkout) and maky_b2b.INPUT_KEY in items:
-                if not maky_b2b.validate_input_payload(items[maky_b2b.INPUT_KEY]):
-                    raise ValidationError(
-                        {
-                            "input": ValidationError(
-                                f"Invalid `{maky_b2b.INPUT_KEY}` payload.",
-                                code=MetadataErrorCode.INVALID.value,
-                            )
-                        }
-                    )
-                guard_maky_b2b_metadata_change(instance)
-            meta_instance = get_valid_metadata_instance(instance)
-            update_metadata(meta_instance, items)
-            if isinstance(instance, Checkout) and maky_b2b.INPUT_KEY in items:
-                invalidate_checkout_prices_after_b2b_input_change(instance)
+            b2b_checkout = (
+                instance
+                if isinstance(instance, Checkout) and maky_b2b.INPUT_KEY in items
+                else None
+            )
+            if b2b_checkout is not None and not maky_b2b.validate_input_payload(
+                items[maky_b2b.INPUT_KEY]
+            ):
+                raise ValidationError(
+                    {
+                        "input": ValidationError(
+                            f"Invalid `{maky_b2b.INPUT_KEY}` payload.",
+                            code=MetadataErrorCode.INVALID.value,
+                        )
+                    }
+                )
+            with maky_b2b_guarded_metadata_change(b2b_checkout):
+                meta_instance = get_valid_metadata_instance(instance)
+                update_metadata(meta_instance, items)
+                if b2b_checkout is not None:
+                    invalidate_checkout_prices_after_b2b_input_change(b2b_checkout)
 
         return cls.success_response(instance)

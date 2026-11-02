@@ -1,4 +1,5 @@
 import warnings
+from contextlib import contextmanager
 
 from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ValidationError
@@ -12,6 +13,7 @@ from ....core.db.connection import allow_writer
 from ....core.db.expressions import PostgresJsonConcatenate
 from ....core.error_codes import MetadataErrorCode
 from ....core.models import ModelWithMetadata
+from ....core.tracing import traced_atomic_transaction
 
 
 def get_valid_metadata_instance(instance) -> ModelWithMetadata:
@@ -181,19 +183,28 @@ def delete_private_metadata_keys(instance, keys: list[str]):
     instance.refresh_from_db(fields=["private_metadata"])
 
 
-def guard_maky_b2b_metadata_change(checkout: Checkout):
-    """MAKY-B2B-V1: B2B input is tax-relevant; respect an active payment lock."""
-    try:
-        maky_b2b.guard_context_change(checkout)
-    except maky_b2b.B2bLockedError as e:
-        raise ValidationError(
-            {
-                "id": ValidationError(
-                    maky_b2b.B2bLockedError.message,
-                    code=MetadataErrorCode.B2B_CHECKOUT_LOCKED.value,
-                )
-            }
-        ) from e
+@contextmanager
+def maky_b2b_guarded_metadata_change(checkout: Checkout | None):
+    """MAKY-B2B-V1: B2B input is tax-relevant; change it atomically with the guard.
+
+    ``None`` means the change does not touch the B2B input (no transaction).
+    """
+    if checkout is None:
+        yield
+        return
+    with traced_atomic_transaction():
+        try:
+            maky_b2b.guard_context_change(checkout.pk)
+        except maky_b2b.B2bLockedError as e:
+            raise ValidationError(
+                {
+                    "id": ValidationError(
+                        maky_b2b.B2bLockedError.message,
+                        code=MetadataErrorCode.B2B_CHECKOUT_LOCKED.value,
+                    )
+                }
+            ) from e
+        yield
 
 
 def invalidate_checkout_prices_after_b2b_input_change(checkout: Checkout):

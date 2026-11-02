@@ -13,8 +13,8 @@ from .base import BaseMetadataMutation
 from .utils import (
     delete_metadata_keys,
     get_valid_metadata_instance,
-    guard_maky_b2b_metadata_change,
     invalidate_checkout_prices_after_b2b_input_change,
+    maky_b2b_guarded_metadata_change,
 )
 
 
@@ -51,10 +51,9 @@ class DeleteMetadata(BaseMetadataMutation):
                 if isinstance(instance, Checkout) and maky_b2b.INPUT_KEY in keys
                 else None
             )
-            if b2b_checkout is not None:
-                guard_maky_b2b_metadata_change(b2b_checkout)
-            meta_instance = get_valid_metadata_instance(instance)
-            delete_metadata_keys(meta_instance, keys)
-            if b2b_checkout is not None:
-                invalidate_checkout_prices_after_b2b_input_change(b2b_checkout)
+            with maky_b2b_guarded_metadata_change(b2b_checkout):
+                meta_instance = get_valid_metadata_instance(instance)
+                delete_metadata_keys(meta_instance, keys)
+                if b2b_checkout is not None:
+                    invalidate_checkout_prices_after_b2b_input_change(b2b_checkout)
         return cls.success_response(instance)

@@ -76,7 +76,37 @@ class CheckoutB2bTaxAttestationInput(graphene.InputObjectType):
         description = "B2B tax attestation for a checkout." + MAKY_B2B_NOTE
 
 
-class CheckoutB2bTaxAttestationUpdate(BaseMutation):
+class MakyB2bAppMutationMixin:
+    """Requires an active app with BOTH MANAGE_TAXES and HANDLE_TAXES.
+
+    Not declared in `Meta.permissions`: Saleor treats that list as OR and
+    documents it so.
+    """
+
+    REQUIRED_PERMISSIONS = (
+        CheckoutPermissions.MANAGE_TAXES,
+        CheckoutPermissions.HANDLE_TAXES,
+    )
+
+    @classmethod
+    def check_permissions(
+        cls, context, permissions=None, require_all_permissions=False, **data
+    ):
+        app = get_app_promise(context).get()
+        if not app or not app.is_active:
+            return False
+        return super().check_permissions(  # type: ignore[misc]
+            context, cls.REQUIRED_PERMISSIONS, require_all_permissions=True, **data
+        )
+
+    @classmethod
+    def mutate(cls, root, info: ResolveInfo, **data):
+        if not cls.check_permissions(info.context):
+            raise PermissionDenied(permissions=list(cls.REQUIRED_PERMISSIONS))
+        return super().mutate(root, info, **data)  # type: ignore[misc]
+
+
+class CheckoutB2bTaxAttestationUpdate(MakyB2bAppMutationMixin, BaseMutation):
     checkout = graphene.Field(Checkout, description="An updated checkout.")
 
     class Arguments:
@@ -94,30 +124,6 @@ class CheckoutB2bTaxAttestationUpdate(BaseMutation):
         )
         doc_category = DOC_CATEGORY_CHECKOUT
         error_type_class = CheckoutB2bTaxAttestationError
-        # Not declared in `permissions`: Saleor treats that list as OR and
-        # documents it so. This mutation requires an app with BOTH permissions.
-
-    REQUIRED_PERMISSIONS = (
-        CheckoutPermissions.MANAGE_TAXES,
-        CheckoutPermissions.HANDLE_TAXES,
-    )
-
-    @classmethod
-    def check_permissions(
-        cls, context, permissions=None, require_all_permissions=False, **data
-    ):
-        app = get_app_promise(context).get()
-        if not app or not app.is_active:
-            return False
-        return super().check_permissions(
-            context, cls.REQUIRED_PERMISSIONS, require_all_permissions=True, **data
-        )
-
-    @classmethod
-    def mutate(cls, root, info: ResolveInfo, **data):
-        if not cls.check_permissions(info.context):
-            raise PermissionDenied(permissions=list(cls.REQUIRED_PERMISSIONS))
-        return super().mutate(root, info, **data)
 
     @classmethod
     def perform_mutation(  # type: ignore[override]

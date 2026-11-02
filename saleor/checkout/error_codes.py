@@ -77,6 +77,13 @@ class CheckoutCreateFromOrderUnavailableVariantErrorCode(Enum):
     INSUFFICIENT_STOCK = "insufficient_stock"
 
 
+class CheckoutB2bPaymentLockReleaseErrorCode(Enum):
+    """MAKY-B2B-V1 error codes of `checkoutB2bPaymentLockRelease`."""
+
+    GRAPHQL_ERROR = "graphql_error"
+    NOT_FOUND = "not_found"
+
+
 class CheckoutB2bTaxAttestationErrorCode(Enum):
     """MAKY-B2B-V1 error codes of `checkoutB2bTaxAttestationUpdate`."""
 

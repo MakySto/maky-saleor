@@ -6,7 +6,7 @@ from django.core.exceptions import ValidationError
 
 from .....app.models import App
 from .....channel.models import Channel
-from .....checkout import maky_b2b
+from .....checkout import maky_b2b, maky_b2b_payment
 from .....checkout import models as checkout_models
 from .....checkout.utils import activate_payments, cancel_active_payments
 from .....core.exceptions import PermissionDenied
@@ -248,7 +248,7 @@ class TransactionInitialize(TransactionSessionBase):
     ):
         """MAKY-B2B-V1: freeze tax regime and amount before contacting the PSP."""
         try:
-            return maky_b2b.prepare_payment_attempt(
+            return maky_b2b_payment.prepare_payment_attempt(
                 checkout=checkout,
                 manager=manager,
                 requested_amount=requested_amount,

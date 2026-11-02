@@ -22,6 +22,7 @@ signature, time, backend mode, payment snapshot), the checkout is taxed.
 """
 
 import base64
+import dataclasses
 import datetime
 import hashlib
 import hmac
@@ -39,15 +40,16 @@ from django.utils import timezone
 
 from ..account.models import Address
 from ..core.prices import quantize_price
+from ..giftcard.const import GIFT_CARD_PAYMENT_GATEWAY_ID
 from ..payment import ChargeStatus, TransactionEventType
 from ..payment.models import Payment, TransactionEvent, TransactionItem
 from ..warehouse.models import Warehouse
-from .fetch import fetch_checkout_info, fetch_checkout_lines
+from .lock_objects import checkout_qs_select_for_update
 from .models import Checkout, CheckoutMetadata
 
 if TYPE_CHECKING:
     from ..app.models import App
-    from .fetch import CheckoutInfo
+    from .fetch import CheckoutInfo, CheckoutLineInfo
 
 logger = logging.getLogger(__name__)
 
@@ -159,8 +161,8 @@ def get_mode() -> str:
     return MODE_ON if value.strip().lower() == MODE_ON else MODE_OFF
 
 
-def get_payment_lock_ttl() -> datetime.timedelta:
-    seconds = int(getattr(settings, "MAKY_B2B_PAYMENT_LOCK_TTL_SECONDS", 1200))
+def get_payment_attempt_grace() -> datetime.timedelta:
+    seconds = int(getattr(settings, "MAKY_B2B_PAYMENT_ATTEMPT_GRACE_SECONDS", 300))
     return datetime.timedelta(seconds=max(seconds, 60))
 
 
@@ -555,11 +557,35 @@ def live_decision(
 # Payment lock
 # ---------------------------------------------------------------------------
 
-_TERMINAL_EVENTS = (
+
+class PaymentAttempts:
+    """Aggregated state of all payment attempts of a checkout.
+
+    ``NONE``: nothing can take money anymore. ``UNRESOLVED``: an attempt may
+    still succeed (provider reached, outcome not final, or the attempt is still
+    being created). ``FUNDS``: money is authorized, charged or pending.
+    """
+
+    NONE = "NONE"
+    UNRESOLVED = "UNRESOLVED"
+    FUNDS = "FUNDS"
+
+
+# Events after which an attempt without money can never take money again: the
+# provider confirmed the cancelation, or a completed charge was fully refunded.
+# A *_FAILURE event is not final: e.g. a Stripe PaymentIntent that failed can be
+# confirmed again with the same client secret.
+_FINAL_EVENTS = (
+    TransactionEventType.CANCEL_SUCCESS,
+    TransactionEventType.REFUND_SUCCESS,
+)
+# The built-in gift card gateway runs synchronously inside Saleor, so its
+# failure is final.
+_GIFT_CARD_FINAL_EVENTS = (
     TransactionEventType.AUTHORIZATION_FAILURE,
     TransactionEventType.CHARGE_FAILURE,
-    TransactionEventType.CANCEL_SUCCESS,
 )
+CANCEL_REQUEST_DEBOUNCE = datetime.timedelta(seconds=60)
 
 
 def _transaction_has_money(item: TransactionItem) -> bool:
@@ -580,6 +606,91 @@ def _payment_has_money(payment: Payment) -> bool:
     )
 
 
+@dataclass(frozen=True)
+class AttemptsSnapshot:
+    status: str
+    funded: list[TransactionItem]
+    unresolved: list[TransactionItem]
+    # snapshot attempts whose transaction does not exist yet (request in flight)
+    being_created: int
+
+
+def _transaction_is_final(item: TransactionItem, event_types: set[str]) -> bool:
+    if event_types.intersection(_FINAL_EVENTS):
+        return True
+    return item.app_identifier == GIFT_CARD_PAYMENT_GATEWAY_ID and bool(
+        event_types.intersection(_GIFT_CARD_FINAL_EVENTS)
+    )
+
+
+def get_payment_attempts(
+    checkout_pk,
+    lock: dict | None,
+    now: datetime.datetime,
+    database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
+) -> AttemptsSnapshot:
+    """Classify every payment attempt of the checkout.
+
+    All transactions of the checkout count, not only those recorded in the B2B
+    snapshot. Time alone never resolves an attempt that reached the provider;
+    only a confirmed final event does. A snapshot attempt whose transaction was
+    never created is "being created" during the grace period and resolved
+    afterwards (Saleor creates the transaction before it calls the provider).
+    """
+    items = list(
+        TransactionItem.objects.using(database_connection_name)
+        .filter(checkout_id=checkout_pk)
+        .order_by("pk")
+    )
+    event_types: dict[int, set[str]] = {}
+    if items:
+        for transaction_id, event_type in (
+            TransactionEvent.objects.using(database_connection_name)
+            .filter(
+                transaction_id__in=[item.pk for item in items],
+                type__in=_FINAL_EVENTS + _GIFT_CARD_FINAL_EVENTS,
+            )
+            .values_list("transaction_id", "type")
+        ):
+            event_types.setdefault(transaction_id, set()).add(event_type)
+    funded = [item for item in items if _transaction_has_money(item)]
+    unresolved = [
+        item
+        for item in items
+        if not _transaction_has_money(item)
+        and not _transaction_is_final(item, event_types.get(item.pk, set()))
+    ]
+    existing_keys = {item.idempotency_key for item in items}
+    being_created = 0
+    grace = get_payment_attempt_grace()
+    for attempt in (lock or {}).get("attempts") or []:
+        if attempt.get("type") != "transaction":
+            continue
+        if attempt.get("idempotencyKey") in existing_keys:
+            continue
+        at = parse_dt(attempt.get("at"))
+        if at is None or now - at < grace:
+            being_created += 1
+    legacy_funded = any(
+        _payment_has_money(payment)
+        for payment in Payment.objects.using(database_connection_name).filter(
+            checkout_id=checkout_pk, is_active=True
+        )
+    )
+    if funded or legacy_funded:
+        status = PaymentAttempts.FUNDS
+    elif unresolved or being_created:
+        status = PaymentAttempts.UNRESOLVED
+    else:
+        status = PaymentAttempts.NONE
+    return AttemptsSnapshot(
+        status=status,
+        funded=funded,
+        unresolved=unresolved,
+        being_created=being_created,
+    )
+
+
 def payment_lock_is_active(
     checkout: Checkout,
     lock: dict | None,
@@ -588,65 +699,31 @@ def payment_lock_is_active(
 ) -> bool:
     """Return whether the frozen payment snapshot still governs the checkout.
 
-    Never released while Saleor knows about authorized, charged or pending
-    money on a locked attempt. Without money it is released after a terminal
-    failure/cancel event of every attempt, or after the lock TTL.
+    The snapshot governs while any payment attempt of the checkout holds money
+    or may still take money. It is never released by time alone.
     """
     if not lock:
         return False
-    attempts = lock.get("attempts") or []
-    keys = [a.get("idempotencyKey") for a in attempts if a.get("type") == "transaction"]
-    payment_ids = [a.get("id") for a in attempts if a.get("type") == "payment"]
-    transactions = list(
-        TransactionItem.objects.using(database_connection_name).filter(
-            checkout_id=checkout.pk, idempotency_key__in=[k for k in keys if k]
-        )
+    return (
+        get_payment_attempts(checkout.pk, lock, now, database_connection_name).status
+        != PaymentAttempts.NONE
     )
-    payments = list(
-        Payment.objects.using(database_connection_name).filter(
-            checkout_id=checkout.pk, pk__in=[p for p in payment_ids if p]
-        )
-    )
-    if any(_transaction_has_money(t) for t in transactions):
-        return True
-    if any(_payment_has_money(p) for p in payments):
-        return True
-    created_at = parse_dt(lock.get("createdAt"))
-    if created_at is None:
-        return False
-    if now - created_at >= get_payment_lock_ttl():
-        return False
-    if not transactions and not payments:
-        # The provider was never reached (creation failed) -> nothing to wait for
-        # once the attempt is older than a short grace period.
-        return now - created_at < datetime.timedelta(minutes=2)
-    terminal_ids = set(
-        TransactionEvent.objects.using(database_connection_name)
-        .filter(
-            transaction_id__in=[t.pk for t in transactions], type__in=_TERMINAL_EVENTS
-        )
-        .values_list("transaction_id", flat=True)
-    )
-    all_transactions_terminal = all(t.pk in terminal_ids for t in transactions)
-    all_payments_inactive = all(not p.is_active for p in payments)
-    return not (all_transactions_terminal and all_payments_inactive)
 
 
-def checkout_has_money_in_flight(
-    checkout: Checkout,
-    database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
-) -> bool:
-    for item in TransactionItem.objects.using(database_connection_name).filter(
-        checkout_id=checkout.pk
-    ):
-        if _transaction_has_money(item):
-            return True
-    for payment in Payment.objects.using(database_connection_name).filter(
-        checkout_id=checkout.pk, is_active=True
-    ):
-        if _payment_has_money(payment):
-            return True
-    return False
+def lines_fingerprint(variant_quantities) -> str:
+    """Fingerprint of the ordered goods: quantity per variant (gift lines included)."""
+    totals: dict[str, int] = {}
+    for variant_id, quantity in variant_quantities:
+        key = str(variant_id)
+        totals[key] = totals.get(key, 0) + int(quantity)
+    canonical = sorted((key, qty) for key, qty in totals.items() if qty)
+    return hashlib.sha256(_canonical(canonical)).hexdigest()
+
+
+def checkout_lines_fingerprint(lines: list["CheckoutLineInfo"]) -> str:
+    return lines_fingerprint(
+        (line_info.line.variant_id, line_info.line.quantity) for line_info in lines
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -662,6 +739,9 @@ class Evaluation:
     context: Context | None
     state: State
     frozen: bool  # decision taken from an active payment snapshot
+    # Any payment attempt holds or may still take money. Computed only by
+    # evaluate_checkout_info (the price path does not need it).
+    payment_locked: bool = False
 
     @property
     def context_version(self) -> str | None:
@@ -720,7 +800,7 @@ def evaluate(
     )
 
 
-def _load_metadata(
+def load_metadata(
     checkout: Checkout, database_connection_name: str
 ) -> CheckoutMetadata | None:
     return (
@@ -742,7 +822,7 @@ def get_effective_tax_exemption(
     checkout = checkout_info.checkout
     if not checkout.tax_exemption:
         return False
-    metadata = _load_metadata(checkout, database_connection_name)
+    metadata = load_metadata(checkout, database_connection_name)
     state = read_state(metadata.private_metadata if metadata else None)
     if not state.managed:
         return True
@@ -760,15 +840,24 @@ def evaluate_checkout_info(
     database_connection_name: str = settings.DATABASE_CONNECTION_DEFAULT_NAME,
 ) -> Evaluation:
     checkout = checkout_info.checkout
-    metadata = _load_metadata(checkout, database_connection_name)
+    metadata = load_metadata(checkout, database_connection_name)
     state = read_state(metadata.private_metadata if metadata else None)
     context = context_from_checkout_info(checkout_info, metadata)
-    return evaluate(
+    now = timezone.now()
+    evaluation = evaluate(
         checkout=checkout,
         context=context,
         state=state,
+        now=now,
         database_connection_name=database_connection_name,
     )
+    payment_locked = evaluation.frozen or (
+        get_payment_attempts(
+            checkout.pk, state.payment_lock, now, database_connection_name
+        ).status
+        != PaymentAttempts.NONE
+    )
+    return dataclasses.replace(evaluation, payment_locked=payment_locked)
 
 
 # ---------------------------------------------------------------------------
@@ -776,13 +865,13 @@ def evaluate_checkout_info(
 # ---------------------------------------------------------------------------
 
 
-def _lock_checkout(checkout_pk) -> Checkout | None:
+def lock_checkout(checkout_pk) -> Checkout | None:
     return (
         Checkout.objects.select_for_update(of=("self",)).filter(pk=checkout_pk).first()
     )
 
 
-def _lock_metadata(checkout: Checkout) -> CheckoutMetadata:
+def lock_metadata(checkout: Checkout) -> CheckoutMetadata:
     metadata = (
         CheckoutMetadata.objects.select_for_update(of=("self",))
         .filter(checkout_id=checkout.pk)
@@ -796,7 +885,7 @@ def _lock_metadata(checkout: Checkout) -> CheckoutMetadata:
     return metadata
 
 
-def _locked_context(checkout: Checkout, metadata: CheckoutMetadata) -> Context:
+def locked_context(checkout: Checkout, metadata: CheckoutMetadata) -> Context:
     address_ids = [
         pk for pk in (checkout.billing_address_id, checkout.shipping_address_id) if pk
     ]
@@ -831,7 +920,7 @@ def _locked_context(checkout: Checkout, metadata: CheckoutMetadata) -> Context:
     )
 
 
-def _write_state(
+def write_state(
     metadata: CheckoutMetadata,
     previous: State,
     *,
@@ -981,12 +1070,12 @@ def apply_attestation(
             return error
 
     with transaction.atomic():
-        checkout = _lock_checkout(checkout_pk)
+        checkout = lock_checkout(checkout_pk)
         if checkout is None:
             return _error("id", B2bErrorCode.NOT_FOUND, "Checkout not found.")
-        metadata = _lock_metadata(checkout)
+        metadata = lock_metadata(checkout)
         state = read_state(metadata.private_metadata)
-        context = _locked_context(checkout, metadata)
+        context = locked_context(checkout, metadata)
         current_version = make_context_version(state.revision, context.hash)
         if expected_context_version != current_version:
             return _error(
@@ -994,9 +1083,10 @@ def apply_attestation(
                 B2bErrorCode.STALE_CONTEXT,
                 "Checkout context changed. Reload b2bTaxState and retry.",
             )
-        if payment_lock_is_active(
-            checkout, state.payment_lock, now
-        ) or checkout_has_money_in_flight(checkout):
+        if (
+            get_payment_attempts(checkout.pk, state.payment_lock, now).status
+            != PaymentAttempts.NONE
+        ):
             return _error(
                 "id",
                 B2bErrorCode.CHECKOUT_LOCKED,
@@ -1013,7 +1103,7 @@ def apply_attestation(
         if structural == Decision.OUT_OF_SCOPE:
             if state.managed:
                 # Revoke only our own approval; never touch export regime.
-                _write_state(
+                write_state(
                     metadata,
                     state,
                     decision=Decision.OUT_OF_SCOPE,
@@ -1055,7 +1145,7 @@ def apply_attestation(
         )
         decision = live_decision(context, new_state_preview, now)
         exempt = decision == Decision.EXEMPT
-        _write_state(
+        write_state(
             metadata,
             state,
             decision=decision,
@@ -1084,18 +1174,19 @@ def revoke_for_native_flag(
     """
     now = timezone.now()
     with transaction.atomic():
-        locked = _lock_checkout(checkout.pk)
+        locked = lock_checkout(checkout.pk)
         if locked is None:
             return B2bErrorCode.NOT_FOUND
-        metadata = _lock_metadata(locked)
+        metadata = lock_metadata(locked)
         state = read_state(metadata.private_metadata)
         if not state.managed:
             return "unmanaged"
-        if payment_lock_is_active(
-            locked, state.payment_lock, now
-        ) or checkout_has_money_in_flight(locked):
+        if (
+            get_payment_attempts(locked.pk, state.payment_lock, now).status
+            != PaymentAttempts.NONE
+        ):
             return B2bErrorCode.B2B_CHECKOUT_LOCKED
-        context = _locked_context(locked, metadata)
+        context = locked_context(locked, metadata)
         if tax_exemption:
             if live_decision(context, state, now) == Decision.EXEMPT:
                 if not locked.tax_exemption:
@@ -1103,7 +1194,7 @@ def revoke_for_native_flag(
                 checkout.tax_exemption = True
                 return None
             return B2bErrorCode.B2B_MANAGED_CHECKOUT
-        _write_state(
+        write_state(
             metadata,
             state,
             decision=live_decision(context, State(True, True, 0, {}), now),
@@ -1118,24 +1209,46 @@ def revoke_for_native_flag(
     return None
 
 
-def guard_context_change(checkout: Checkout) -> None:
-    """Reject tax-relevant changes while a B2B payment snapshot is active.
+def guard_context_change(checkout_pk) -> None:
+    """Lock the checkout row and reject the change during an active B2B payment.
 
-    Called by address, delivery and metadata mutations inside their atomic
-    block. Unmanaged checkouts cost one indexed metadata query.
+    Must run inside the transaction that performs the change, before its first
+    write. ``prepare_payment_attempt`` takes the same row lock before it stores
+    a payment snapshot, so the check and the write form one atomic step: either
+    the payment snapshot sees the new data, or the change is rejected.
+
+    Two indexed queries for any checkout (row lock, then metadata); the row lock
+    is taken anyway by the checkout save that follows. Payment attempts are read
+    only for a managed checkout with a payment snapshot.
     """
-    metadata = _load_metadata(checkout, settings.DATABASE_CONNECTION_DEFAULT_NAME)
-    state = read_state(metadata.private_metadata if metadata else None)
+    if not transaction.get_connection().in_atomic_block:
+        raise RuntimeError(
+            "guard_context_change must run inside the transaction of the change."
+        )
+    locked_pks = list(
+        checkout_qs_select_for_update()
+        .filter(pk=checkout_pk)
+        .values_list("pk", flat=True)
+    )
+    if not locked_pks:
+        return
+    # Read the state in a new statement only after the lock is held. Under READ
+    # COMMITTED a statement that waited for the lock still sees other tables as
+    # of its start, so a metadata subquery in the locking statement would miss
+    # the payment snapshot committed by the transaction it waited for.
+    private_metadata = (
+        CheckoutMetadata.objects.filter(checkout_id=checkout_pk)
+        .values_list("private_metadata", flat=True)
+        .first()
+    )
+    if not private_metadata:
+        return
+    state = read_state(private_metadata)
     if not state.managed or not state.payment_lock:
         return
-    with transaction.atomic():
-        locked = _lock_checkout(checkout.pk)
-        if locked is None:
-            return
-        metadata = _load_metadata(locked, settings.DATABASE_CONNECTION_DEFAULT_NAME)
-        state = read_state(metadata.private_metadata if metadata else None)
-        if payment_lock_is_active(locked, state.payment_lock, timezone.now()):
-            raise B2bLockedError()
+    locked = Checkout(pk=checkout_pk)
+    if payment_lock_is_active(locked, state.payment_lock, timezone.now()):
+        raise B2bLockedError()
 
 
 class B2bLockedError(Exception):
@@ -1152,152 +1265,79 @@ class B2bContextChangedError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Payment initialization snapshot
-# ---------------------------------------------------------------------------
-
-
-def _remaining_amount(checkout: Checkout, total_gross: Decimal) -> Decimal:
-    """Return the amount to pay, same rule as `TransactionSessionBase.get_amount`."""
-    amount = total_gross
-    for item in TransactionItem.objects.filter(checkout_id=checkout.pk):
-        amount -= max(item.authorized_value, item.charged_value)
-        amount -= item.authorize_pending_value
-        amount -= item.charge_pending_value
-    return max(amount, Decimal(0))
-
-
-def prepare_payment_attempt(
-    *,
-    checkout: Checkout,
-    manager,
-    requested_amount: Decimal | None,
-    attempt: dict,
-    allow_partial: bool = False,
-) -> Decimal | None:
-    """Freeze tax regime and amount for a payment attempt of a managed checkout.
-
-    Runs before the provider is contacted. Under the checkout row lock it
-    recalculates prices from primary data (forced, so no cache can hide a
-    changed context), evaluates the attestation (TTL is assessed here), checks
-    the requested amount against the server amount and stores a payment
-    snapshot bound to the attempt. Returns the server amount to request, or
-    ``None`` for checkouts outside the workflow (native behaviour).
-
-    Raises ``B2bLockedError`` or ``B2bContextChangedError``.
-    """
-    # Imported here: `calculations` imports this module (price path hook).
-    from .calculations import fetch_checkout_data
-
-    metadata = _load_metadata(checkout, settings.DATABASE_CONNECTION_DEFAULT_NAME)
-    if not read_state(metadata.private_metadata if metadata else None).managed:
-        return None
-    now = timezone.now()
-    with transaction.atomic():
-        locked = _lock_checkout(checkout.pk)
-        if locked is None:
-            raise B2bContextChangedError("Checkout does not exist anymore.")
-        metadata = _lock_metadata(locked)
-        state = read_state(metadata.private_metadata)
-        context = _locked_context(locked, metadata)
-        lock = state.payment_lock
-        lock_active = bool(lock) and payment_lock_is_active(locked, lock, now)
-
-        lines, _ = fetch_checkout_lines(locked)
-        checkout_info = fetch_checkout_info(locked, lines, manager)
-        checkout_info, _ = fetch_checkout_data(
-            checkout_info, manager, lines, requestor=None, force_update=True
-        ).get()
-        fresh = checkout_info.checkout
-        total_gross = quantize_price(fresh.total_gross_amount, fresh.currency)
-        server_amount = quantize_price(
-            _remaining_amount(fresh, total_gross), fresh.currency
-        )
-        if total_gross != quantize_price(checkout.total_gross_amount, fresh.currency):
-            raise B2bContextChangedError(
-                "Checkout total changed. Reload the summary and confirm the amount "
-                "again."
-            )
-        if requested_amount is not None:
-            requested_amount = quantize_price(requested_amount, fresh.currency)
-            if allow_partial:
-                if requested_amount > server_amount:
-                    raise B2bContextChangedError(
-                        "Requested amount exceeds the amount to pay."
-                    )
-            elif requested_amount != server_amount:
-                raise B2bContextChangedError(
-                    "Requested amount differs from the amount to pay. Reload the "
-                    "summary and confirm the amount again."
-                )
-        amount = requested_amount if requested_amount is not None else server_amount
-
-        if lock_active:
-            assert lock is not None
-            if (
-                lock.get("contextHash") == context.hash
-                and lock.get("totalGross") == str(total_gross)
-                and lock.get("currency") == fresh.currency
-            ):
-                # Retry of the same quote: attach the attempt to the same snapshot.
-                attempts = list(lock.get("attempts") or [])
-                attempts.append({**attempt, "at": now.isoformat()})
-                _write_state(
-                    metadata,
-                    state,
-                    decision=state.data.get("decision", Decision.TAXED_UNVERIFIED),
-                    attestation=state.attestation,
-                    payment_lock={**lock, "attempts": attempts[-10:]},
-                    app=None,
-                    event="payment_retry",
-                    now=now,
-                    bump_revision=False,
-                )
-                return amount
-            raise B2bLockedError()
-
-        # New attempt: live evaluation on the freshly locked data.
-        evaluation = evaluate(checkout=fresh, context=context, state=state, now=now)
-        _write_state(
-            metadata,
-            state,
-            decision=evaluation.decision,
-            attestation=state.attestation,
-            payment_lock={
-                "createdAt": now.isoformat(),
-                "contextHash": context.hash,
-                "revision": state.revision,
-                "decision": evaluation.decision,
-                "exempt": evaluation.effective_exemption,
-                "totalGross": str(total_gross),
-                "totalNet": str(quantize_price(fresh.total_net_amount, fresh.currency)),
-                "amount": str(amount),
-                "currency": fresh.currency,
-                "attempts": [{**attempt, "at": now.isoformat()}],
-            },
-            app=None,
-            event="payment_lock",
-            now=now,
-            bump_revision=False,
-        )
-    return amount
-
-
-# ---------------------------------------------------------------------------
 # Order creation
 # ---------------------------------------------------------------------------
+
+
+def _check_money_is_covered_by_snapshot(
+    checkout: Checkout, lock: dict | None, now: datetime.datetime
+) -> None:
+    """Every transaction with money on a managed checkout must belong to the snapshot.
+
+    Closes the window in which a payment started while the checkout was not
+    managed yet (no snapshot) and an attestation landed before its transaction
+    existed: the money was requested for a different offer.
+    """
+    attempts = get_payment_attempts(checkout.pk, lock, now)
+    covered = {
+        attempt.get("idempotencyKey")
+        for attempt in (lock or {}).get("attempts") or []
+        if attempt.get("type") == "transaction"
+    }
+    if any(item.idempotency_key not in covered for item in attempts.funded):
+        raise B2bContextChangedError(
+            "A payment of this checkout was not started for the confirmed offer."
+        )
+
+
+def _check_order_matches_payment_snapshot(
+    lock: dict,
+    *,
+    context_hash: str,
+    currency: str,
+    total_gross: Decimal,
+    lines_hash: str,
+    voucher_code: str | None,
+) -> None:
+    mismatches = []
+    if lock.get("contextHash") != context_hash:
+        mismatches.append("tax context")
+    if lock.get("currency") != currency:
+        mismatches.append("currency")
+    try:
+        confirmed_total = Decimal(str(lock.get("totalGross")))
+    except ArithmeticError:
+        confirmed_total = None
+    if confirmed_total is None or confirmed_total != total_gross:
+        mismatches.append("total")
+    if lock.get("linesHash") != lines_hash:
+        mismatches.append("lines")
+    if lock.get("voucherCode") != voucher_code:
+        mismatches.append("voucher")
+    if mismatches:
+        raise B2bContextChangedError(
+            "Checkout differs from the offer confirmed by the started payment ("
+            + ", ".join(mismatches)
+            + ")."
+        )
 
 
 def validate_and_build_order_snapshot(
     checkout_info: "CheckoutInfo",
     metadata: CheckoutMetadata | None,
     *,
-    order_total_gross: Decimal | None = None,
+    order_total_gross: Decimal,
+    lines_hash: str,
 ) -> tuple[bool, dict | None]:
     """Validate the B2B state right before the order is created.
 
-    Returns ``(order_tax_exemption, snapshot_or_None)``. Raises
-    ``B2bContextChangedError`` if the checkout is not consistent with the
-    frozen payment snapshot or its tax decision.
+    ``order_total_gross`` and ``lines_hash`` must describe the order that is
+    being created (same checkout version). Returns
+    ``(order_tax_exemption, snapshot_or_None)``. Raises
+    ``B2bContextChangedError`` if the order is not the offer confirmed by the
+    active payment snapshot (tax context, currency, total, goods, voucher) or
+    its tax decision changed. The native "fully paid" check is kept; it does
+    not catch a lower total.
     """
     checkout = checkout_info.checkout
     now = timezone.now()
@@ -1317,9 +1357,19 @@ def validate_and_build_order_snapshot(
             raise B2bContextChangedError(
                 "Checkout changed during completion. Reload the checkout."
             )
-        if evaluation.frozen and lock and lock.get("contextHash") != context.hash:
-            raise B2bContextChangedError(
-                "Checkout data differ from the started payment."
+        _check_money_is_covered_by_snapshot(checkout, lock, now)
+        if evaluation.frozen and lock:
+            _check_order_matches_payment_snapshot(
+                lock,
+                context_hash=context.hash,
+                currency=checkout.currency,
+                # Same basis as the snapshot (checkout total before legacy gift
+                # cards), recalculated together with the order being created.
+                total_gross=quantize_price(
+                    checkout.total_gross_amount, checkout.currency
+                ),
+                lines_hash=lines_hash,
+                voucher_code=checkout.voucher_code or None,
             )
     exempt = evaluation.effective_exemption
     reason = None
@@ -1354,11 +1404,7 @@ def validate_and_build_order_snapshot(
         "paymentLock": lock if evaluation.frozen else None,
         "checkoutTotal": {
             "net": str(checkout.total_net_amount),
-            "gross": str(
-                order_total_gross
-                if order_total_gross is not None
-                else checkout.total_gross_amount
-            ),
+            "gross": str(order_total_gross),
             "currency": checkout.currency,
         },
     }

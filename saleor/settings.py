@@ -1017,10 +1017,12 @@ MAKY_B2B_VAT_EXEMPTION_MODE = (
     if os.environ.get("MAKY_B2B_VAT_EXEMPTION_MODE", "off").strip().lower() == "on"
     else "off"
 )
-# How long a started B2B payment attempt without any money known to Saleor keeps
-# the checkout's tax context frozen.
-MAKY_B2B_PAYMENT_LOCK_TTL_SECONDS = int(
-    parse(os.environ.get("MAKY_B2B_PAYMENT_LOCK_TTL", "20 minutes"))
+# A B2B payment snapshot whose transaction was never created is treated as "the
+# payment provider was never contacted" only after this grace period. It must be
+# longer than the longest possible transactionInitialize request (gunicorn
+# timeout). Time alone never releases an attempt that reached the provider.
+MAKY_B2B_PAYMENT_ATTEMPT_GRACE_SECONDS = int(
+    parse(os.environ.get("MAKY_B2B_PAYMENT_ATTEMPT_GRACE", "5 minutes"))
 )
 
 CHECKOUT_DELIVERY_OPTIONS_TTL = datetime.timedelta(

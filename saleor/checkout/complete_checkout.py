@@ -806,7 +806,13 @@ def _create_order(
         else OrderStatus.UNCONFIRMED
     )
     order_tax_exemption, maky_b2b_snapshot = _get_maky_b2b_order_data(
-        checkout_info, get_checkout_metadata(checkout)
+        checkout_info,
+        get_checkout_metadata(checkout),
+        order_total_gross=order_data["total"].gross.amount,
+        lines_hash=maky_b2b.lines_fingerprint(
+            (line_info.line.variant_id, line_info.quantity)
+            for line_info in order_lines_info
+        ),
     )
     order = Order.objects.create(
         **order_data,
@@ -921,12 +927,17 @@ def _create_order(
 def _get_maky_b2b_order_data(
     checkout_info: "CheckoutInfo",
     checkout_metadata,
-    order_total_gross=None,
+    *,
+    order_total_gross,
+    lines_hash: str,
 ) -> tuple[bool, dict | None]:
     """MAKY-B2B-V1: verify the B2B tax state and build the order snapshot."""
     try:
         return maky_b2b.validate_and_build_order_snapshot(
-            checkout_info, checkout_metadata, order_total_gross=order_total_gross
+            checkout_info,
+            checkout_metadata,
+            order_total_gross=order_total_gross,
+            lines_hash=lines_hash,
         )
     except maky_b2b.B2bContextChangedError as e:
         raise ValidationError(
@@ -1486,7 +1497,10 @@ def _create_order_from_checkout(
     )
 
     order_tax_exemption, maky_b2b_snapshot = _get_maky_b2b_order_data(
-        checkout_info, checkout_metadata, order_total_gross=taxed_total.gross.amount
+        checkout_info,
+        checkout_metadata,
+        order_total_gross=taxed_total.gross.amount,
+        lines_hash=maky_b2b.checkout_lines_fingerprint(checkout_lines_info),
     )
     private_metadata = dict(checkout_metadata.private_metadata or {})
     if maky_b2b_snapshot:

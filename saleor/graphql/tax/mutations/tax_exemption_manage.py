@@ -7,6 +7,7 @@ from ....checkout import maky_b2b
 from ....checkout.fetch import fetch_checkout_info, fetch_checkout_lines
 from ....checkout.models import Checkout
 from ....checkout.utils import invalidate_checkout
+from ....core.tracing import traced_atomic_transaction
 from ....graphql.core.mutations import BaseMutation
 from ....order import ORDER_EDITABLE_STATUS
 from ....order.models import Order
@@ -141,25 +142,26 @@ class TaxExemptionManage(BaseMutation):
         cls.validate_input(info, data)
         obj = cls.get_object(info, data["id"])
 
-        if isinstance(obj, Checkout) and cls._handle_maky_b2b_checkout(
-            info, obj, data["tax_exemption"]
-        ):
+        if isinstance(obj, Checkout):
+            # MAKY-B2B-V1: the B2B check and the native write run under the same
+            # checkout row lock, so an attestation cannot interleave.
+            with traced_atomic_transaction():
+                if not cls._handle_maky_b2b_checkout(info, obj, data["tax_exemption"]):
+                    obj.tax_exemption = data["tax_exemption"]
+                    cls._invalidate_checkout(info, obj)
+                    obj.save(
+                        update_fields=[
+                            "tax_exemption",
+                            "price_expiration",
+                            "discount_expiration",
+                            "last_change",
+                        ]
+                    )
             return TaxExemptionManage(
                 taxable_object=SyncWebhookControlContext(node=obj)
             )
 
         obj.tax_exemption = data["tax_exemption"]
-
-        if isinstance(obj, Checkout):
-            cls._invalidate_checkout(info, obj)
-            obj.save(
-                update_fields=[
-                    "tax_exemption",
-                    "price_expiration",
-                    "discount_expiration",
-                    "last_change",
-                ]
-            )
 
         if isinstance(obj, Order):
             cls.validate_order_status(obj)

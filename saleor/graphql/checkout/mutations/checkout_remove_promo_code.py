@@ -25,7 +25,11 @@ from ...discount.types import Voucher
 from ...giftcard.types import GiftCard
 from ...plugins.dataloaders import get_plugin_manager_promise
 from ..types import Checkout
-from .utils import get_checkout, mark_checkout_deliveries_as_stale_if_needed
+from .utils import (
+    get_checkout,
+    maky_b2b_guarded_change,
+    mark_checkout_deliveries_as_stale_if_needed,
+)
 
 
 class CheckoutRemovePromoCode(BaseMutation):
@@ -89,31 +93,32 @@ class CheckoutRemovePromoCode(BaseMutation):
         manager = get_plugin_manager_promise(info.context).get()
         checkout_info = fetch_checkout_info(checkout, [], manager)
 
-        if promo_code:
-            try:
-                remove_promo_code_from_checkout_or_error(checkout_info, promo_code)
-            except ValidationError as e:
-                raise ValidationError({"promo_code": e}) from e
-        else:
-            object_type, promo_code_pk = cls.clean_promo_code_id(promo_code_id)
-            cls.remove_promo_code_by_id_or_error(
-                info, checkout, object_type, promo_code_pk
-            )
-        # if this step is reached, it means promo code was removed
-        lines, _ = fetch_checkout_lines(checkout)
+        with maky_b2b_guarded_change(checkout, field="promo_code"):
+            if promo_code:
+                try:
+                    remove_promo_code_from_checkout_or_error(checkout_info, promo_code)
+                except ValidationError as e:
+                    raise ValidationError({"promo_code": e}) from e
+            else:
+                object_type, promo_code_pk = cls.clean_promo_code_id(promo_code_id)
+                cls.remove_promo_code_by_id_or_error(
+                    info, checkout, object_type, promo_code_pk
+                )
+            # if this step is reached, it means promo code was removed
+            lines, _ = fetch_checkout_lines(checkout)
 
-        fields_to_update = mark_checkout_deliveries_as_stale_if_needed(
-            checkout_info.checkout, lines
-        )
-        fields_to_update += invalidate_checkout(
-            checkout_info,
-            lines,
-            manager,
-            recalculate_discount=True,
-            save=False,
-        )
-        if fields_to_update:
-            checkout.save(update_fields=fields_to_update)
+            fields_to_update = mark_checkout_deliveries_as_stale_if_needed(
+                checkout_info.checkout, lines
+            )
+            fields_to_update += invalidate_checkout(
+                checkout_info,
+                lines,
+                manager,
+                recalculate_discount=True,
+                save=False,
+            )
+            if fields_to_update:
+                checkout.save(update_fields=fields_to_update)
 
         call_checkout_info_event(
             manager,

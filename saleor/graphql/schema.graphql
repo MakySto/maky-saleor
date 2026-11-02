@@ -11875,7 +11875,7 @@ type B2bTaxState @doc(category: "Checkout") {
   expiresAt: DateTime
 
   """
-  True while a started payment freezes the tax context; company, VAT, address and delivery changes are rejected.
+  True while a payment attempt of the checkout holds money or may still take money (time alone never ends it). A new attestation is rejected; on a checkout with a B2B payment snapshot, changes of company/VAT input, addresses, delivery, lines and promo codes are rejected too. Use `checkoutB2bPaymentLockRelease` to abandon attempts without money.
   """
   paymentLocked: Boolean!
 }
@@ -21309,6 +21309,14 @@ type Mutation {
     """Attestation to store."""
     input: CheckoutB2bTaxAttestationInput!
   ): CheckoutB2bTaxAttestationUpdate @doc(category: "Checkout")
+
+  """
+  Recovery when the customer abandons a started payment to change checkout data. Payment attempts holding money are never touched. Attempts without money that may still succeed are asked to cancel through their payment app; `b2bTaxState.paymentLocked` turns false once the app confirms the cancelation. Idempotent; requires an active app with both MANAGE_TAXES and HANDLE_TAXES. MAKY fork only (contract MAKY-B2B-V1).
+  """
+  checkoutB2bPaymentLockRelease(
+    """The checkout's ID."""
+    id: ID!
+  ): CheckoutB2bPaymentLockRelease @doc(category: "Checkout")
 
   """
   Updates billing address in the existing checkout.
@@ -31649,6 +31657,47 @@ enum B2bVatVerificationStatus {
   VALID
   INVALID
   UNAVAILABLE
+}
+
+"""
+Recovery when the customer abandons a started payment to change checkout data. Payment attempts holding money are never touched. Attempts without money that may still succeed are asked to cancel through their payment app; `b2bTaxState.paymentLocked` turns false once the app confirms the cancelation. Idempotent; requires an active app with both MANAGE_TAXES and HANDLE_TAXES. MAKY fork only (contract MAKY-B2B-V1).
+"""
+type CheckoutB2bPaymentLockRelease @doc(category: "Checkout") {
+  """The checkout."""
+  checkout: Checkout
+
+  """Result of the release request."""
+  status: B2bPaymentLockReleaseStatus
+  errors: [CheckoutB2bPaymentLockReleaseError!]!
+}
+
+"""
+Result of `checkoutB2bPaymentLockRelease`. `RELEASED`: no attempt can take money; changes are allowed. `CANCELATION_REQUESTED`: wait until `b2bTaxState.paymentLocked` is false. `ATTEMPT_BEING_CREATED`: a `transactionInitialize` is still running; retry shortly. `PAYMENT_HAS_FUNDS`: money is authorized or charged; finish the started payment.
+"""
+enum B2bPaymentLockReleaseStatus @doc(category: "Checkout") {
+  RELEASED
+  CANCELATION_REQUESTED
+  ATTEMPT_BEING_CREATED
+  PAYMENT_HAS_FUNDS
+}
+
+type CheckoutB2bPaymentLockReleaseError @doc(category: "Checkout") {
+  """
+  Name of a field that caused the error. A value of `null` indicates that the error isn't associated with a particular field.
+  """
+  field: String
+
+  """The error message."""
+  message: String
+
+  """The error code."""
+  code: CheckoutB2bPaymentLockReleaseErrorCode!
+}
+
+"""MAKY-B2B-V1 error codes of `checkoutB2bPaymentLockRelease`."""
+enum CheckoutB2bPaymentLockReleaseErrorCode @doc(category: "Checkout") {
+  GRAPHQL_ERROR
+  NOT_FOUND
 }
 
 """

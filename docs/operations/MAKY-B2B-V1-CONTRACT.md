@@ -1,12 +1,30 @@
 # MAKY-B2B-V1 — kontrakt backend ↔ storefront
 
 **Stav:** implementované v `maky-saleor`, vetva `maky-b2b-vat-exemption-v3.23.31`
-(základ `maky-production-patches-v3.23.31`). Nenasadené.
+(základ `maky-production-patches-v3.23.31`), PR #16. Nenasadené.
+**Revízia 2** (opravy po posudku, 2. 11. 2026) — zmeny oproti commitu `68ca91a` sú
+zhrnuté v §0. Názvy a význam existujúcich polí sa nemenia.
 **Pre koho:** relácia *MAKY.STORE - Storefront 4.5*. Toto je jediný záväzný opis
 nového GraphQL rozhrania. Zmena názvov alebo významu sa zapisuje sem aj do
 storefront handoffu.
 
 Všetko nové je **fork-only** (nie je v upstream Saleore).
+
+## 0. Zmeny v revízii 2 (pre storefront)
+
+Nič sa nepremenovalo: `Checkout.b2bTaxState`, typ `B2bTaxState`, `contextVersion`,
+`paymentLocked`, `checkoutB2bTaxAttestationUpdate`, jej vstupy, rozhodnutia a chybové
+kódy zostávajú. Zmenilo sa správanie platobného zámku a pribudla jedna mutácia:
+
+| # | Zmena | Čo s tým storefront |
+|---|---|---|
+| 1 | Zámok sa **neuvoľní časom** ani udalosťou `*_FAILURE`. Uvoľní ho iba potvrdené zrušenie pokusu (`CANCEL_SUCCESS`), plná refundácia, alebo dôkaz, že pokus vôbec nevznikol. | Po zlyhanej karte zákazník môže zaplatiť **tú istú ponuku** znova (`transactionInitialize` prejde). Ak chce meniť údaje, musí najprv uvoľniť zámok (bod 2). |
+| 2 | Nová mutácia `checkoutB2bPaymentLockRelease(id)` (rovnaký app token). Pokusy bez peňazí požiada platobnú aplikáciu zrušiť; pokusy s peniazmi nechá tak. Vráti `status`. | Tlačidlo „Zmeniť údaje“ v stave `paymentLocked`: zavolať mutáciu, pri `CANCELATION_REQUESTED` / `ATTEMPT_BEING_CREATED` krátko pollovať `b2bTaxState.paymentLocked`, kým nie je `false`. Pri `PAYMENT_HAS_FUNDS` zmenu neponúkať, nechať dokončiť platbu. |
+| 3 | `paymentLocked` je `true` aj na **nespravovanom** checkoute, ak má pokus o platbu, ktorý ešte môže zobrať peniaze. Atestácia je vtedy odmietnutá (`CHECKOUT_LOCKED`). | Rovnaké správanie ako doteraz pri `paymentLocked=true`: neposielať VIES ani atestáciu, ponúknuť bod 2. |
+| 4 | Počas aktívneho snapshotu sú odmietnuté aj zmeny **položiek, množstva a kupónov** (`checkoutLinesAdd/Update/Delete`, `checkoutLineDelete`, `checkoutAddPromoCode`, `checkoutRemovePromoCode`) a zastaraná `checkoutShippingMethodUpdate`: `CheckoutErrorCode.B2B_CHECKOUT_LOCKED`. | Mapovať rovnako ako pri adrese: „Platba už prebieha“ + bod 2. Pri kupónoch je `field` = `promoCode`. |
+| 5 | `checkoutComplete` porovná objednávku s potvrdenou ponukou (mena, suma, tovar, kupón, daňový kontext). Nezhoda → `B2B_TAX_CONTEXT_CHANGED` aj vtedy, keď je zaplatené **viac**. | Zobraziť „Suma sa zmenila, objednávka nevznikla“; peniaze uvoľní existujúci mechanizmus Saleoru. |
+| 6 | Kontrola zámku a zápis zmeny sú jedna transakcia pod zámkom checkoutu. | Nič; súbežná platba buď vidí nové údaje, alebo je zmena odmietnutá. |
+| 7 | Premenná `MAKY_B2B_PAYMENT_LOCK_TTL` zrušená, nahradila ju `MAKY_B2B_PAYMENT_ATTEMPT_GRACE` (backend). | Nič. |
 
 ## 1. Čo storefront robí a čo nie
 
@@ -57,7 +75,7 @@ type B2bTaxState {
   effectiveTaxExemption: Boolean!  # MAKY § 43 je účinné pre ceny tejto odpovede
   checkedAt: DateTime              # pôvodný čas uloženého VIES overenia
   expiresAt: DateTime              # len pri VALID: checkedAt + 24 h
-  paymentLocked: Boolean!          # rozšírenie oproti návrhu: začatá platba zmrazila kontext
+  paymentLocked: Boolean!          # pokus o platbu drží alebo ešte môže zobrať peniaze (§8)
 }
 
 enum B2bTaxDecision {
@@ -94,7 +112,29 @@ input CheckoutB2bTaxAttestationInput {
 
 type Mutation {
   checkoutB2bTaxAttestationUpdate(id: ID!, input: CheckoutB2bTaxAttestationInput!): CheckoutB2bTaxAttestationUpdate
+  checkoutB2bPaymentLockRelease(id: ID!): CheckoutB2bPaymentLockRelease   # revízia 2
 }
+
+type CheckoutB2bPaymentLockRelease {
+  checkout: Checkout
+  status: B2bPaymentLockReleaseStatus
+  errors: [CheckoutB2bPaymentLockReleaseError!]!
+}
+
+enum B2bPaymentLockReleaseStatus {
+  RELEASED                 # nič už nemôže zobrať peniaze; zmeny sú povolené
+  CANCELATION_REQUESTED    # zrušenie vyžiadané od platobnej app; čakať na paymentLocked=false
+  ATTEMPT_BEING_CREATED    # transactionInitialize ešte beží; skúsiť o chvíľu
+  PAYMENT_HAS_FUNDS        # peniaze sú autorizované/zúčtované; dokončiť platbu
+}
+
+type CheckoutB2bPaymentLockReleaseError {
+  field: String
+  message: String
+  code: CheckoutB2bPaymentLockReleaseErrorCode!
+}
+
+enum CheckoutB2bPaymentLockReleaseErrorCode { GRAPHQL_ERROR NOT_FOUND }
 
 type CheckoutB2bTaxAttestationUpdate {
   checkout: Checkout
@@ -122,7 +162,7 @@ Nové hodnoty v **existujúcich** enumoch (frontend mapuje `code`, nie text):
 
 | Enum | Nové hodnoty | Kde |
 |---|---|---|
-| `CheckoutErrorCode` | `B2B_CHECKOUT_LOCKED`, `B2B_TAX_CONTEXT_CHANGED` | `checkoutBillingAddressUpdate`, `checkoutShippingAddressUpdate`, `checkoutDeliveryMethodUpdate` (zámok); `checkoutComplete` (zmenený kontext) |
+| `CheckoutErrorCode` | `B2B_CHECKOUT_LOCKED`, `B2B_TAX_CONTEXT_CHANGED` | zámok: `checkoutBillingAddressUpdate`, `checkoutShippingAddressUpdate`, `checkoutDeliveryMethodUpdate`, `checkoutShippingMethodUpdate`, `checkoutLinesAdd`, `checkoutLinesUpdate`, `checkoutLinesDelete`, `checkoutLineDelete`, `checkoutAddPromoCode`, `checkoutRemovePromoCode`; `checkoutComplete` (objednávka ≠ potvrdená ponuka) |
 | `TransactionInitializeErrorCode` | `B2B_CHECKOUT_LOCKED`, `B2B_TAX_CONTEXT_CHANGED` | `transactionInitialize` |
 | `MetadataErrorCode` | `B2B_CHECKOUT_LOCKED` | `updateMetadata`/`deleteMetadata` vstupného kľúča |
 | `TaxExemptionManageErrorCode` | `B2B_CHECKOUT_LOCKED`, `B2B_MANAGED_CHECKOUT` | `taxExemptionManage` na spravovanom checkoute |
@@ -131,7 +171,7 @@ Nové hodnoty v **existujúcich** enumoch (frontend mapuje `code`, nie text):
 
 ## 4. Oprávnenia a token
 
-`checkoutB2bTaxAttestationUpdate` povolí iba **aktívnu aplikáciu** s **oboma**
+`checkoutB2bTaxAttestationUpdate` aj `checkoutB2bPaymentLockRelease` povolia iba **aktívnu aplikáciu** s **oboma**
 oprávneniami `MANAGE_TAXES` **a** `HANDLE_TAXES` (AND je vynútené v kóde; staff
 používateľ ani app s jedným z nich neprejde → GraphQL `PermissionDenied`).
 Token: `SALEOR_B2B_APP_TOKEN` iba na serveri storefrontu. `b2bTaxState` je čitateľné
@@ -153,6 +193,31 @@ bez tokenu každým, kto smie čítať daný checkout; neobsahuje privátny audi
 
 `verification: null` = odvolanie (napr. zákazník vypol nákup na firmu). Aj odvolanie
 potrebuje aktuálnu verziu.
+
+Obnova po začatej platbe (revízia 2), keď `paymentLocked = true` a zákazník chce meniť
+údaje:
+
+```
+a. mutation checkoutB2bPaymentLockRelease(id)            (serverový app token)
+b. RELEASED              -> pokračovať krokom 1 (zmena údajov je povolená)
+   CANCELATION_REQUESTED -> pollovať b2bTaxState.paymentLocked (napr. 1 s, max ~30 s);
+                            false -> krok 1; stále true -> ponúknuť zaplatiť pôvodnú
+                            ponuku alebo kontakt na obchod (manuálne zosúladenie, OPERATIONS §7)
+   ATTEMPT_BEING_CREATED -> zopakovať a. o niekoľko sekúnd
+   PAYMENT_HAS_FUNDS     -> zmenu neponúkať; dokončiť objednávku s pôvodnou ponukou
+```
+
+Zaplatiť **tú istú** ponuku znova (napr. po odmietnutej karte) je možné vždy bez kroku a.
+
+```graphql
+mutation ReleaseB2bPayment($id: ID!) {
+  checkoutB2bPaymentLockRelease(id: $id) {
+    status
+    errors { field code message }
+    checkout { b2bTaxState { contextVersion decision paymentLocked } }
+  }
+}
+```
 
 ### Príklad: dotaz
 
@@ -257,26 +322,39 @@ Zmena množstva alebo zľavy kontext nemení, ale ceny prepočíta bežná logik
 
 ## 8. Platba
 
-- `transactionInitialize` na spravovanom checkoute: pod zámkom checkoutu prepočíta
-  ceny z primárnej DB, posúdi atestáciu (24 h sa hodnotí tu) a uloží **nemenný
-  platobný snapshot** (rozhodnutie, suma, kontext) naviazaný na `idempotencyKey`
-  pokusu, **ešte pred** volaním Stripe app.
+- `transactionInitialize`: pod zámkom checkoutu (aj na nespravovanom checkoute, aby
+  sa nestihla vložiť atestácia) prepočíta ceny z primárnej DB. Na spravovanom checkoute
+  posúdi atestáciu (24 h sa hodnotí tu) a uloží **nemenný platobný snapshot**
+  (rozhodnutie, suma, mena, daňový kontext, tovar = množstvo na variant, kupón)
+  naviazaný na `idempotencyKey` pokusu, **ešte pred** volaním Stripe app.
 - `amount`: vynechané = suma zo servera. Zadané a odlišné od servera →
   `B2B_TAX_CONTEXT_CHANGED` (pole `amount`), Stripe sa nevolá. Storefront obnoví
   rekapituláciu a nechá sumu potvrdiť znova.
-- Opakované `transactionInitialize` s rovnakou ponukou (rovnaký kontext a suma)
-  sa pripojí k tomu istému snapshotu. Iná ponuka počas aktívneho snapshotu →
+- Opakované `transactionInitialize` s rovnakou ponukou (kontext, suma, mena, tovar,
+  kupón) sa pripojí k tomu istému snapshotu. Iná ponuka počas aktívneho snapshotu →
   `B2B_CHECKOUT_LOCKED`.
-- Počas aktívneho snapshotu: zmena adries, odberu, vstupu a atestácie →
-  `B2B_CHECKOUT_LOCKED`. Toto je stav platby, nie neplatná adresa.
-- Snapshot je aktívny, kým Saleor eviduje na zamknutom pokuse autorizované,
-  zúčtované alebo čakajúce peniaze; bez peňazí do terminálnej udalosti
-  (`AUTHORIZATION_FAILURE`, `CHARGE_FAILURE`, `CANCEL_SUCCESS`) alebo do uplynutia
-  `MAKY_B2B_PAYMENT_LOCK_TTL` (default 20 min).
+- Počas aktívneho snapshotu: zmena adries, doručenia, vstupu, atestácie, položiek,
+  množstva a kupónov → `B2B_CHECKOUT_LOCKED`. Toto je stav platby, nie neplatná adresa.
+  Kontrola a zápis prebehnú v jednej transakcii pod zámkom checkoutu.
+- **Kedy je zámok aktívny (`paymentLocked = true`):** kým niektorý pokus o platbu
+  checkoutu (všetky transakcie checkoutu, nielen tie zo snapshotu) drží peniaze
+  (autorizované, zúčtované, čakajúce) **alebo ich ešte môže zobrať**. Pokus bez peňazí
+  je ukončený iba po `CANCEL_SUCCESS`, po plnej refundácii, pri internej darčekovej
+  karte po jej zlyhaní, alebo ak transakcia k pokusu zo snapshotu nevznikla ani po
+  `MAKY_B2B_PAYMENT_ATTEMPT_GRACE` (default 5 min; dovtedy `ATTEMPT_BEING_CREATED`).
+  **Čas ani `AUTHORIZATION_FAILURE`/`CHARGE_FAILURE` zámok neuvoľnia** — Stripe
+  PaymentIntent po zlyhaní možno potvrdiť znova.
+- Uvoľnenie: `checkoutB2bPaymentLockRelease` (§5). Nikdy nerobí refundáciu ani
+  nezruší autorizované peniaze.
 - Počas aktívneho snapshotu platí jeho daňový režim aj po vypršaní VIES alebo po
   vypnutí režimu (žiadne tiché navýšenie autorizovanej sumy).
-- `checkoutComplete` bez dostatočnej platby zlyhá natívnym `CHECKOUT_NOT_FULLY_PAID`
-  — aj keď sa po vypršaní zámku zmení adresa na SK a neskôr príde netto platba.
+- `checkoutComplete` / `orderCreateFromCheckout` pri aktívnom snapshote porovnajú
+  objednávku, ktorá práve vzniká, s potvrdenou ponukou: mena, celková suma (pred
+  legacy darčekovými kartami), tovar, kupón, daňový kontext. Nezhoda →
+  `B2B_TAX_CONTEXT_CHANGED` (aj pri **nižšej** sume, ktorú by natívna kontrola úhrady
+  prijala ako preplatok). Natívne `CHECKOUT_NOT_FULLY_PAID` zostáva.
+- Zmenu ceny v katalógu (staff) počas platby backend nevie zablokovať; zachytí ju
+  kontrola pri dokončení a objednávka nevznikne.
 
 ## 9. Objednávka
 

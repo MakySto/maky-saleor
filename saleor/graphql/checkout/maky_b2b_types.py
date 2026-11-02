@@ -4,7 +4,7 @@ from typing import Final
 
 import graphene
 
-from ...checkout import maky_b2b
+from ...checkout import maky_b2b, maky_b2b_payment
 from ..core.doc_category import DOC_CATEGORY_CHECKOUT
 from ..core.scalars import DateTime
 from ..core.types import BaseObjectType
@@ -36,6 +36,21 @@ B2bTaxDecisionEnum: Final[graphene.Enum] = graphene.Enum(
 B2bTaxDecisionEnum.doc_category = DOC_CATEGORY_CHECKOUT
 
 
+B2bPaymentLockReleaseStatusEnum: Final[graphene.Enum] = graphene.Enum(
+    "B2bPaymentLockReleaseStatus",
+    [(choice, choice) for choice in maky_b2b_payment.ReleaseStatus.CHOICES],
+    description=(
+        "Result of `checkoutB2bPaymentLockRelease`. `RELEASED`: no attempt can "
+        "take money; changes are allowed. `CANCELATION_REQUESTED`: wait until "
+        "`b2bTaxState.paymentLocked` is false. `ATTEMPT_BEING_CREATED`: a "
+        "`transactionInitialize` is still running; retry shortly. "
+        "`PAYMENT_HAS_FUNDS`: money is authorized or charged; finish the "
+        "started payment."
+    ),
+)
+B2bPaymentLockReleaseStatusEnum.doc_category = DOC_CATEGORY_CHECKOUT
+
+
 class B2bTaxState(BaseObjectType):
     context_version = graphene.String(
         required=True,
@@ -52,8 +67,12 @@ class B2bTaxState(BaseObjectType):
     expires_at = DateTime(description="Time when a VALID check stops being usable.")
     payment_locked = graphene.Boolean(
         required=True,
-        description="True while a started payment freezes the tax context; "
-        "company, VAT, address and delivery changes are rejected.",
+        description="True while a payment attempt of the checkout holds money "
+        "or may still take money (time alone never ends it). A new attestation "
+        "is rejected; on a checkout with a B2B payment snapshot, changes of "
+        "company/VAT input, addresses, delivery, lines and promo codes are "
+        "rejected too. Use `checkoutB2bPaymentLockRelease` to abandon attempts "
+        "without money.",
     )
 
     class Meta:
@@ -63,7 +82,6 @@ class B2bTaxState(BaseObjectType):
 
 def evaluation_to_b2b_tax_state(evaluation: "maky_b2b.Evaluation") -> dict:
     attestation = evaluation.state.attestation or {}
-    lock = evaluation.state.payment_lock
     return {
         "context_version": evaluation.context_version,
         "decision": evaluation.decision,
@@ -72,5 +90,5 @@ def evaluation_to_b2b_tax_state(evaluation: "maky_b2b.Evaluation") -> dict:
         else False,
         "checked_at": maky_b2b.parse_dt(attestation.get("checkedAt")),
         "expires_at": maky_b2b.parse_dt(attestation.get("expiresAt")),
-        "payment_locked": bool(lock) and evaluation.frozen,
+        "payment_locked": evaluation.payment_locked,
     }
