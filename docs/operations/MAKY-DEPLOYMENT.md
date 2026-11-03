@@ -21,7 +21,7 @@ Sú to **tri samostatné nasadenia**. Nezamieňaj ich.
 | Kde beží | VPS `/opt/saleor`, systemd | S3 + CloudFront | **iný stroj**, `/opt/storefront` |
 | Verejne | `api.maky.store` | `dashboard.maky.store` | `maky.store` |
 | Ako sa aktualizuje | kód + venv + DB migrácie | build → upload do S3 prefixu | vlastný deploy storefront vlákna |
-| Verzia dnes | **3.23.31** + MAKY-B2B-V1 (`8ffed5e`, režim `off`) | **3.23.32** | commit `3089012` pripravený, **nenasadený** |
+| Verzia dnes | **3.23.31** + MAKY-B2B-V1 (`8ffed5e`, režim `on` od 2026-11-03 19:10 UTC) | **3.23.32** | commit `3089012` pripravený, **nenasadený** |
 
 Rýchle overenie **Core a Dashboardu** (storefront nie — ten má vlastný stroj a vlákno, viď §5):
 
@@ -553,7 +553,7 @@ a po úspešnom nasadení sa dá zmazať.
 
 ---
 
-## 12. B2B oslobodenie DPH (MAKY-B2B-V1) — NASADENÉ 2026-11-03 v režime `off`
+## 12. B2B oslobodenie DPH (MAKY-B2B-V1) — NASADENÉ 2026-11-03, ZAPNUTÉ (`on`) 19:10 UTC
 
 Vetva `maky-b2b-vat-exemption-v3.23.31` (nad `maky-production-patches-v3.23.31`).
 Bez migrácií a nových závislostí; nový `.env` prepínač `MAKY_B2B_VAT_EXEMPTION_MODE`
@@ -588,13 +588,36 @@ nasadenie/vypnutie/rollback: [MAKY-B2B-V1-OPERATIONS.md](MAKY-B2B-V1-OPERATIONS.
   `https://api.maky.store/graphql/` vracia typ `B2bTaxState`, v journale od okna
   žiadny `ERROR`/`CRITICAL`/`Traceback`.
 
-**Návrat pri tomto stave** (režim `off`, B2B app token ešte nie je nasadený, takže
-žiadny checkout nemôže byť spravovaný): najprv krížová kontrola z OPERATIONS §5
-(SQL počet `maky.b2b.state.v1` = 0), potom
+**Návrat pri stave z 12.1** (režim `off`, žiadny spravovaný checkout) bol možný
+priamo: krížová kontrola z OPERATIONS §5 (SQL počet `maky.b2b.state.v1` = 0), potom
 `sudo -u saleor git -C /opt/saleor reset -q --hard maky-rollback-pre-b2b` a reštart
-troch služieb v rovnakom poradí. Keď už existuje spravovaný checkout, platí celý
-postup OPERATIONS §5 (`drain`, `maky_b2b_rollback check`).
+troch služieb v rovnakom poradí. **Od zapnutia (12.2) platí iba celý postup
+OPERATIONS §5** (`drain`, `maky_b2b_rollback check` → `READY`).
 
-Ďalej: storefront musí pred zapnutím dopojiť `checkoutB2bPaymentLockRelease`
-(CONTRACT §0), B2B app token a spoločný test v Stripe test mode (OPERATIONS §8).
+### 12.2 Zapnutie 2026-11-03 19:10 UTC [overené]
+
+- Schválil Marek v projekte („Zapni b2b obchod!“, 2026-11-03 15:44 UTC), vedome
+  **bez spoločného testu v Stripe test mode** (OPERATIONS §8). Prvé firemné
+  objednávky kontrolovať ručne v Dashboarde.
+- Predpoklady: B2B app token v SSM `/maky/storefront/saleor/b2b-app-token`
+  (SecureString, `alias/aws/ssm`, verzia 1); storefront PR 87 nasadený
+  (`586500d`), jeho kontrola pripravenosti `ok:true` (app aktívna, `MANAGE_TAXES`
+  a `HANDLE_TAXES`, kontrakt vrátane `checkoutB2bPaymentLockRelease` platný).
+- Kontrola pred zmenou (blok vložený do terminálu VS Code): HEAD `8ffed5e`, služby
+  `active`, `MODE off`, platobná app `Stripe` `handle_payments=True`
+  `cancel_webhook=True` (jediná aktívna app s `TRANSACTION_INITIALIZE_SESSION`),
+  `MANAGED_CHECKOUTS 0`.
+- Zmena: záloha `/opt/saleor/.env.bak-pre-b2b-on-20261103T191003Z`, do `.env`
+  pridaný jediný kľúč `MAKY_B2B_VAT_EXEMPTION_MODE=on` (diff kľúčov iba tento),
+  preflight nového procesu `MODE on`. Reštart 19:10:07 UTC `saleor-celerybeat` →
+  `saleor` → (5 s) → `saleor-celery`.
+- Read-back: tri služby `active`, `NRestarts=0`, `/proc/<MainPID>/environ` všetkých
+  troch `MAKY_B2B_VAT_EXEMPTION_MODE=on`, `MODE on`, `MANAGED_CHECKOUTS 0`, API vracia
+  `B2bTaxState`, v journale od reštartu žiadny `ERROR`/`CRITICAL`/`Traceback`.
+- Potom storefront `B2B_CHECKOUT_UI_ENABLED=true` (storefrontové vlákno).
+- **Vypnutie** (OPERATIONS §4): v `.env` `MAKY_B2B_VAT_EXEMPTION_MODE=off` (alebo
+  vrátiť zálohu vyššie) a reštart troch služieb v rovnakom poradí; storefront
+  prepínač zvlášť.
+- Nález: `/opt/saleor/.env` má práva `664 saleor:saleor` (čitateľný pre všetkých
+  používateľov servera), stav už pred touto zmenou. Odporúčanie: `640`; neriešené.
 
