@@ -65,7 +65,7 @@ from ..warehouse.availability import check_stock_and_preorder_quantity_bulk
 from ..warehouse.management import allocate_preorders, allocate_stocks
 from ..warehouse.models import Reservation, Stock
 from ..warehouse.reservations import is_reservation_enabled
-from . import AddressType
+from . import AddressType, maky_b2b
 from .base_calculations import (
     base_checkout_delivery_price,
     base_checkout_undiscounted_delivery_price,
@@ -805,6 +805,15 @@ def _create_order(
         if checkout_info.channel.automatically_confirm_all_new_orders
         else OrderStatus.UNCONFIRMED
     )
+    order_tax_exemption, maky_b2b_snapshot = _get_maky_b2b_order_data(
+        checkout_info,
+        get_checkout_metadata(checkout),
+        order_total_gross=order_data["total"].gross.amount,
+        lines_hash=maky_b2b.lines_fingerprint(
+            (line_info.line.variant_id, line_info.quantity)
+            for line_info in order_lines_info
+        ),
+    )
     order = Order.objects.create(
         **order_data,
         checkout_token=str(checkout.token),
@@ -812,7 +821,7 @@ def _create_order(
         origin=OrderOrigin.CHECKOUT,
         channel=checkout_info.channel,
         should_refresh_prices=False,
-        tax_exemption=checkout_info.checkout.tax_exemption,
+        tax_exemption=order_tax_exemption,
     )
 
     _create_order_discount(order, checkout_info)
@@ -875,6 +884,11 @@ def _create_order(
         order.store_value_in_private_metadata(
             {data.key: data.value for data in private_metadata_list}
         )
+    if maky_b2b_snapshot:
+        order.private_metadata = {
+            **(order.private_metadata or {}),
+            maky_b2b.ORDER_SNAPSHOT_KEY: maky_b2b_snapshot,
+        }
 
     update_order_charge_data(order, with_save=False)
     update_order_authorize_data(order, with_save=False)
@@ -908,6 +922,32 @@ def _create_order(
     )
 
     return order
+
+
+def _get_maky_b2b_order_data(
+    checkout_info: "CheckoutInfo",
+    checkout_metadata,
+    *,
+    order_total_gross,
+    lines_hash: str,
+) -> tuple[bool, dict | None]:
+    """MAKY-B2B-V1: verify the B2B tax state and build the order snapshot."""
+    try:
+        return maky_b2b.validate_and_build_order_snapshot(
+            checkout_info,
+            checkout_metadata,
+            order_total_gross=order_total_gross,
+            lines_hash=lines_hash,
+        )
+    except maky_b2b.B2bContextChangedError as e:
+        raise ValidationError(
+            {
+                "id": ValidationError(
+                    e.message,
+                    code=CheckoutErrorCode.B2B_TAX_CONTEXT_CHANGED.value,
+                )
+            }
+        ) from e
 
 
 def _prepare_checkout(
@@ -1456,6 +1496,16 @@ def _create_order_from_checkout(
         checkout_lines_info,
     )
 
+    order_tax_exemption, maky_b2b_snapshot = _get_maky_b2b_order_data(
+        checkout_info,
+        checkout_metadata,
+        order_total_gross=taxed_total.gross.amount,
+        lines_hash=maky_b2b.checkout_lines_fingerprint(checkout_lines_info),
+    )
+    private_metadata = dict(checkout_metadata.private_metadata or {})
+    if maky_b2b_snapshot:
+        private_metadata[maky_b2b.ORDER_SNAPSHOT_KEY] = maky_b2b_snapshot
+
     # order
     order = Order.objects.create(  # type: ignore[misc] # see below:
         status=status,
@@ -1468,10 +1518,10 @@ def _create_order_from_checkout(
         origin=OrderOrigin.CHECKOUT,
         channel=checkout_info.channel,
         metadata=checkout_metadata.metadata,
-        private_metadata=checkout_metadata.private_metadata,
+        private_metadata=private_metadata,
         redirect_url=checkout_info.checkout.redirect_url,
         should_refresh_prices=False,
-        tax_exemption=checkout_info.checkout.tax_exemption,
+        tax_exemption=order_tax_exemption,
         tax_error=checkout_info.checkout.tax_error,
         lines_count=len(checkout_lines_info),
         **shipping_details,

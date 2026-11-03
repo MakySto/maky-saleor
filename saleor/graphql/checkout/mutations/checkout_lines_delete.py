@@ -17,7 +17,11 @@ from ...core.utils import WebhookEventInfo
 from ...plugins.dataloaders import get_plugin_manager_promise
 from ...utils import resolve_global_ids_to_primary_keys
 from ..types import Checkout
-from .utils import get_checkout, mark_checkout_deliveries_as_stale_if_needed
+from .utils import (
+    get_checkout,
+    maky_b2b_guarded_change,
+    mark_checkout_deliveries_as_stale_if_needed,
+)
 
 
 class CheckoutLinesDelete(BaseMutation):
@@ -94,24 +98,25 @@ class CheckoutLinesDelete(BaseMutation):
             lines_ids, graphene_type="CheckoutLine", raise_error=True
         )
         cls.validate_lines(checkout, lines_to_delete)
-        checkout.lines.filter(id__in=lines_to_delete).delete()
+        with maky_b2b_guarded_change(checkout):
+            checkout.lines.filter(id__in=lines_to_delete).delete()
 
-        lines, _ = fetch_checkout_lines(checkout)
+            lines, _ = fetch_checkout_lines(checkout)
 
-        manager = get_plugin_manager_promise(info.context).get()
-        checkout_info = fetch_checkout_info(checkout, lines, manager)
-        shipping_update_fields = mark_checkout_deliveries_as_stale_if_needed(
-            checkout_info.checkout, lines
-        )
-        invalidate_update_fields = invalidate_checkout(
-            checkout_info, lines, manager, save=False
-        )
-        checkout.search_index_dirty = True
-        checkout.save(
-            update_fields=shipping_update_fields
-            + invalidate_update_fields
-            + ["search_index_dirty"]
-        )
+            manager = get_plugin_manager_promise(info.context).get()
+            checkout_info = fetch_checkout_info(checkout, lines, manager)
+            shipping_update_fields = mark_checkout_deliveries_as_stale_if_needed(
+                checkout_info.checkout, lines
+            )
+            invalidate_update_fields = invalidate_checkout(
+                checkout_info, lines, manager, save=False
+            )
+            checkout.search_index_dirty = True
+            checkout.save(
+                update_fields=shipping_update_fields
+                + invalidate_update_fields
+                + ["search_index_dirty"]
+            )
         call_checkout_info_event(
             manager,
             event_name=WebhookEventAsyncType.CHECKOUT_UPDATED,

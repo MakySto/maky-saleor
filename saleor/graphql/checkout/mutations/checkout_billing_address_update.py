@@ -4,7 +4,6 @@ from ....checkout import AddressType
 from ....checkout.actions import call_checkout_info_event
 from ....checkout.fetch import fetch_checkout_info, fetch_checkout_lines
 from ....checkout.utils import change_billing_address_in_checkout, invalidate_checkout
-from ....core.tracing import traced_atomic_transaction
 from ....webhook.event_types import WebhookEventAsyncType
 from ...account.types import AddressInput
 from ...core import ResolveInfo
@@ -18,7 +17,7 @@ from ...plugins.dataloaders import get_plugin_manager_promise
 from ..types import Checkout
 from .checkout_create import CheckoutAddressValidationRules
 from .checkout_shipping_address_update import CheckoutShippingAddressUpdate
-from .utils import get_checkout
+from .utils import get_checkout, maky_b2b_guarded_change
 
 
 class CheckoutBillingAddressUpdate(CheckoutShippingAddressUpdate):
@@ -100,7 +99,7 @@ class CheckoutBillingAddressUpdate(CheckoutShippingAddressUpdate):
             ),
         )
         manager = get_plugin_manager_promise(info.context).get()
-        with traced_atomic_transaction():
+        with maky_b2b_guarded_change(checkout):
             billing_address.save()
             change_address_updated_fields = change_billing_address_in_checkout(
                 checkout, billing_address, save_address

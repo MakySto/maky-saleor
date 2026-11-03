@@ -1,6 +1,7 @@
 import graphene
 
 from ...core import ResolveInfo
+from ...core.mutations import validate_maky_b2b_metadata_keys
 from ...core.types import MetadataError, NonNullList
 from ..permissions import PRIVATE_META_PERMISSION_MAP
 from .base import BaseMetadataMutation
@@ -32,6 +33,7 @@ class DeletePrivateMetadata(BaseMetadataMutation):
     def perform_mutation(  # type: ignore[override]
         cls, _root, info: ResolveInfo, /, *, id: str, keys: list[str]
     ):
+        validate_maky_b2b_metadata_keys(keys, private=True, field="keys")
         instance = cls.get_instance(info, id=id)
 
         if instance:

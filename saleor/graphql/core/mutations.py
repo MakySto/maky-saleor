@@ -20,6 +20,7 @@ from graphene import ObjectType
 from graphene.types.mutation import MutationOptions
 from graphql.error import GraphQLError
 
+from ...checkout import maky_b2b
 from ...core.db.connection import allow_writer
 from ...core.error_codes import UploadErrorCode
 from ...core.exceptions import PermissionDenied
@@ -598,7 +599,12 @@ class BaseMutation(graphene.Mutation):
 
     @classmethod
     def create_metadata_from_graphql_input(
-        cls, metadata_list: list[MetadataInput] | None, *, error_field_name: str
+        cls,
+        metadata_list: list[MetadataInput] | None,
+        *,
+        error_field_name: str,
+        private: bool | None = None,
+        allow_maky_b2b_input_key: bool = True,
     ) -> metadata_manager.MetadataItemCollection:
         """Wrap the creation of metadata and raises ValidationError.
 
@@ -609,6 +615,15 @@ class BaseMutation(graphene.Mutation):
         To inject / resolve errors matching validator
 
         """
+        # MAKY-B2B-V1: the `maky.b2b.` namespace is owned by the backend.
+        if private is None:
+            private = "private" in error_field_name
+        validate_maky_b2b_metadata_keys(
+            [item.key for item in metadata_list or []],
+            private=private,
+            field=error_field_name,
+            allow_input_key=allow_maky_b2b_input_key,
+        )
         try:
             return metadata_manager.create_from_graphql_input(metadata_list)
         except metadata_manager.MetadataEmptyKeyError:
@@ -1223,4 +1238,23 @@ class FileUpload(BaseMutation):
 
         return FileUpload(
             uploaded_file=File(url=path, content_type=file_data.content_type)
+        )
+
+
+def validate_maky_b2b_metadata_keys(
+    keys, *, private: bool, field: str, allow_input_key: bool = True
+):
+    """MAKY-B2B-V1: reject writes into the reserved `maky.b2b.` namespace."""
+    forbidden = maky_b2b.find_forbidden_keys(keys, private=private)
+    if not allow_input_key and maky_b2b.INPUT_KEY in keys:
+        forbidden.append(maky_b2b.INPUT_KEY)
+    if forbidden:
+        raise ValidationError(
+            {
+                field: ValidationError(
+                    "Metadata keys in the `maky.b2b.` namespace are reserved: "
+                    + ", ".join(sorted(set(forbidden))),
+                    code="invalid",
+                )
+            }
         )

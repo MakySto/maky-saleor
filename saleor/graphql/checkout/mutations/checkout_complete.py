@@ -296,7 +296,10 @@ class CheckoutComplete(BaseMutation, I18nMixin):
                 id or checkout_id or graphene.Node.to_global_id("Checkout", token),
             )
             cls.create_metadata_from_graphql_input(
-                metadata, error_field_name="metadata"
+                metadata,
+                error_field_name="metadata",
+                # MAKY-B2B-V1: B2B input cannot change during completion.
+                allow_maky_b2b_input_key=False,
             )
 
         validate_checkout_email(checkout)

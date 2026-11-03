@@ -21,6 +21,9 @@ class PaymentErrorCode(Enum):
     NO_CHECKOUT_LINES = "no_checkout_lines"
     CHECKOUT_COMPLETION_IN_PROGRESS = "checkout_completion_in_progress"
     CHECKOUT_HAS_TRANSACTION = "checkout_has_transaction"
+    # MAKY-B2B-V1
+    B2B_CHECKOUT_LOCKED = "b2b_checkout_locked"
+    B2B_TAX_CONTEXT_CHANGED = "b2b_tax_context_changed"
 
 
 class TransactionCreateErrorCode(Enum):
@@ -90,6 +93,9 @@ class TransactionInitializeErrorCode(Enum):
     NOT_FOUND = "not_found"
     UNIQUE = "unique"
     CHECKOUT_COMPLETION_IN_PROGRESS = "checkout_completion_in_progress"
+    # MAKY-B2B-V1
+    B2B_CHECKOUT_LOCKED = "b2b_checkout_locked"
+    B2B_TAX_CONTEXT_CHANGED = "b2b_tax_context_changed"
 
 
 class TransactionProcessErrorCode(Enum):

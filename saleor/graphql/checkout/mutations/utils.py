@@ -2,6 +2,7 @@ import datetime
 import uuid
 from collections import defaultdict
 from collections.abc import Iterable
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, cast
@@ -14,11 +15,12 @@ from django.db.models import Exists, OuterRef, Q, QuerySet
 from django.utils import timezone
 from prices import Money
 
-from ....checkout import models
+from ....checkout import maky_b2b, models
 from ....checkout.delivery_context import is_shipping_required
 from ....checkout.error_codes import CheckoutErrorCode
 from ....checkout.fetch import CheckoutLineInfo
 from ....core.exceptions import InsufficientStock, PermissionDenied
+from ....core.tracing import traced_atomic_transaction
 from ....discount import DiscountType, DiscountValueType
 from ....discount.interface import DiscountInfo
 from ....discount.models import CheckoutLineDiscount, PromotionRule
@@ -634,3 +636,28 @@ def _set_checkout_base_subtotal_and_total_on_checkout_creation(
     # delivery method during checkout creation
     checkout.base_total = checkout.base_subtotal
     checkout.save(update_fields=["base_subtotal_amount", "base_total_amount"])
+
+
+@contextmanager
+def maky_b2b_guarded_change(checkout: models.Checkout, field: str = "id"):
+    """MAKY-B2B-V1: run a tax-relevant checkout change atomically with the guard.
+
+    Opens the transaction, locks the checkout row and rejects the change while
+    a B2B payment snapshot is active. Every write of the change must happen
+    inside the block, so a concurrent transactionInitialize either waits and
+    snapshots the new data, or blocks the change. Keep remote calls (VIES,
+    payment, sync webhooks) outside the block.
+    """
+    with traced_atomic_transaction():
+        try:
+            maky_b2b.guard_context_change(checkout.pk)
+        except maky_b2b.B2bLockedError as e:
+            raise ValidationError(
+                {
+                    field: ValidationError(
+                        maky_b2b.B2bLockedError.message,
+                        code=CheckoutErrorCode.B2B_CHECKOUT_LOCKED.value,
+                    )
+                }
+            ) from e
+        yield

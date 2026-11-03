@@ -31,6 +31,7 @@ from ..types import Checkout
 from .utils import (
     ERROR_DOES_NOT_SHIP,
     get_checkout,
+    maky_b2b_guarded_change,
 )
 
 if TYPE_CHECKING:
@@ -251,12 +252,13 @@ class CheckoutDeliveryMethodUpdate(BaseMutation):
         delivery_method_data = cls.get_delivery_method_data(
             checkout_info, delivery_method_id, requestor=requestor
         )
-        assign_delivery_method_to_checkout(
-            checkout_info,
-            lines,
-            manager,
-            delivery_method_data,
-        )
+        with maky_b2b_guarded_change(checkout):
+            assign_delivery_method_to_checkout(
+                checkout_info,
+                lines,
+                manager,
+                delivery_method_data,
+            )
         return CheckoutDeliveryMethodUpdate(
             checkout=SyncWebhookControlContext(checkout_info.checkout)
         )

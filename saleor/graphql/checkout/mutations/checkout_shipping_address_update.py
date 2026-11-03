@@ -15,7 +15,6 @@ from ....checkout.utils import (
     change_shipping_address_in_checkout,
     invalidate_checkout,
 )
-from ....core.tracing import traced_atomic_transaction
 from ....graphql.account.mixins import AddressMetadataMixin
 from ....warehouse.reservations import is_reservation_enabled
 from ....webhook.event_types import WebhookEventAsyncType
@@ -36,6 +35,7 @@ from .utils import (
     ERROR_CC_ADDRESS_CHANGE_FORBIDDEN,
     check_lines_quantity,
     get_checkout,
+    maky_b2b_guarded_change,
     mark_checkout_deliveries_as_stale_if_needed,
 )
 
@@ -181,20 +181,19 @@ class CheckoutShippingAddressUpdate(AddressMetadataMixin, BaseMutation, I18nMixi
         checkout_info = fetch_checkout_info(checkout, lines, manager)
 
         country = shipping_address_instance.country.code
-        checkout.set_country(country, commit=True)
+        with maky_b2b_guarded_change(checkout):
+            checkout.set_country(country, commit=True)
 
-        # Resolve and process the lines, validating variants quantities
-        if lines and use_legacy_error_flow_for_checkout:
-            cls.process_checkout_lines(
-                info,
-                lines,
-                country,
-                checkout_info.channel.slug,
-                checkout_info.get_delivery_method_info(),
-            )
+            # Resolve and process the lines, validating variants quantities
+            if lines and use_legacy_error_flow_for_checkout:
+                cls.process_checkout_lines(
+                    info,
+                    lines,
+                    country,
+                    checkout_info.channel.slug,
+                    checkout_info.get_delivery_method_info(),
+                )
 
-        shipping_address_updated_fields = []
-        with traced_atomic_transaction():
             shipping_address_instance.save()
             shipping_address_updated_fields = change_shipping_address_in_checkout(
                 checkout_info,
@@ -202,20 +201,20 @@ class CheckoutShippingAddressUpdate(AddressMetadataMixin, BaseMutation, I18nMixi
                 save_address,
             )
 
-        shipping_update_fields = mark_checkout_deliveries_as_stale_if_needed(
-            checkout_info.checkout, lines
-        )
+            shipping_update_fields = mark_checkout_deliveries_as_stale_if_needed(
+                checkout_info.checkout, lines
+            )
 
-        invalidate_prices_updated_fields = invalidate_checkout(
-            checkout_info, lines, manager, save=False
-        )
-        checkout.search_index_dirty = True
-        checkout.save(
-            update_fields=shipping_address_updated_fields
-            + invalidate_prices_updated_fields
-            + shipping_update_fields
-            + ["search_index_dirty"]
-        )
+            invalidate_prices_updated_fields = invalidate_checkout(
+                checkout_info, lines, manager, save=False
+            )
+            checkout.search_index_dirty = True
+            checkout.save(
+                update_fields=shipping_address_updated_fields
+                + invalidate_prices_updated_fields
+                + shipping_update_fields
+                + ["search_index_dirty"]
+            )
 
         call_checkout_info_event(
             manager,

@@ -6,6 +6,9 @@ class TaxExemptionManageErrorCode(Enum):
     INVALID = "invalid"
     NOT_FOUND = "not_found"
     NOT_EDITABLE_ORDER = "not_editable_order"
+    # MAKY-B2B-V1
+    B2B_CHECKOUT_LOCKED = "b2b_checkout_locked"
+    B2B_MANAGED_CHECKOUT = "b2b_managed_checkout"
 
 
 class TaxConfigurationUpdateErrorCode(Enum):

@@ -18,6 +18,8 @@ class MetadataErrorCode(Enum):
     NOT_FOUND = "not_found"
     REQUIRED = "required"
     NOT_UPDATED = "not_updated"
+    # MAKY-B2B-V1
+    B2B_CHECKOUT_LOCKED = "b2b_checkout_locked"
 
 
 class TranslationErrorCode(Enum):

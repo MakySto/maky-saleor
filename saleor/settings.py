@@ -1010,6 +1010,23 @@ JWT_TTL_REQUEST_EMAIL_CHANGE = datetime.timedelta(
 CHECKOUT_PRICES_TTL = datetime.timedelta(
     seconds=parse(os.environ.get("CHECKOUT_PRICES_TTL", "1 hour"))
 )
+# MAKY-B2B-V1: authoritative backend policy for new automatic § 43 exemptions.
+# Only the exact value "on" enables new grants. "drain" (rollback preparation)
+# behaves like "off" and in addition no checkout becomes managed. Anything else
+# means "off".
+MAKY_B2B_VAT_EXEMPTION_MODE = (
+    os.environ.get("MAKY_B2B_VAT_EXEMPTION_MODE", "off").strip().lower()
+)
+if MAKY_B2B_VAT_EXEMPTION_MODE not in ("on", "drain"):
+    MAKY_B2B_VAT_EXEMPTION_MODE = "off"
+# A B2B payment snapshot whose transaction was never created is treated as "the
+# payment provider was never contacted" only after this grace period. It must be
+# longer than the longest possible transactionInitialize request (gunicorn
+# timeout). Time alone never releases an attempt that reached the provider.
+MAKY_B2B_PAYMENT_ATTEMPT_GRACE_SECONDS = int(
+    parse(os.environ.get("MAKY_B2B_PAYMENT_ATTEMPT_GRACE", "5 minutes"))
+)
+
 CHECKOUT_DELIVERY_OPTIONS_TTL = datetime.timedelta(
     seconds=parse(os.environ.get("CHECKOUT_DELIVERY_OPTIONS_TTL", "24 hours"))
 )

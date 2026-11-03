@@ -5,7 +5,7 @@ import graphene
 from promise import Promise
 
 from ...account.models import User
-from ...checkout import models, problems
+from ...checkout import maky_b2b, models, problems
 from ...checkout.calculations import recalculate_discounts
 from ...checkout.delivery_context import (
     get_valid_collection_points_for_checkout,
@@ -105,6 +105,7 @@ from .dataloaders.checkout_delivery import (
     CheckoutDeliveryByIdLoader,
 )
 from .enums import CheckoutAuthorizeStatusEnum, CheckoutChargeStatusEnum
+from .maky_b2b_types import B2bTaxState, evaluation_to_b2b_tax_state
 from .utils import prevent_sync_event_circular_query
 
 if TYPE_CHECKING:
@@ -814,6 +815,15 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
         description="Returns True if checkout has to be exempt from taxes.",
         required=True,
     )
+    b2b_tax_state = BaseField(
+        B2bTaxState,
+        description=(
+            "MAKY B2B § 43 tax state of the checkout, evaluated together with "
+            "the checkout prices of the same response. MAKY fork only "
+            "(MAKY-B2B-V1)."
+        ),
+        required=True,
+    )
     token = graphene.Field(UUID, description="The checkout's token.", required=True)
     total_price = BaseField(
         TaxedMoney,
@@ -1050,6 +1060,31 @@ class Checkout(SyncWebhookControlContextModelObjectType[models.Checkout]):
             )
             .load((checkout.token, root.allow_sync_webhooks, False))
             .then(_get_total_price)
+        )
+
+    @staticmethod
+    @traced_resolver
+    @prevent_sync_event_circular_query
+    def resolve_b2b_tax_state(
+        root: SyncWebhookControlContext[models.Checkout], info: ResolveInfo
+    ):
+        checkout = root.node
+
+        def _evaluate(data):
+            checkout_info, _ = data
+            database_connection_name = get_database_connection_name(info.context)
+            with allow_writer_in_context(info.context):
+                evaluation = maky_b2b.evaluate_checkout_info(
+                    checkout_info, database_connection_name=database_connection_name
+                )
+            return evaluation_to_b2b_tax_state(evaluation)
+
+        return (
+            CheckoutPriceCalculationByCheckoutIdAndWebhookSyncAndForceStatusUpdateLoader(
+                info.context
+            )
+            .load((checkout.token, root.allow_sync_webhooks, False))
+            .then(_evaluate)
         )
 
     @staticmethod

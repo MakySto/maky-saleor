@@ -34,6 +34,7 @@ from .utils import (
     get_checkout,
     get_variants_and_total_quantities,
     group_lines_input_on_add,
+    maky_b2b_guarded_change,
     mark_checkout_deliveries_as_stale_if_needed,
     validate_price_override_reason,
     validate_variants_are_published,
@@ -246,23 +247,24 @@ class CheckoutLinesAdd(BaseMutation):
             checkout_info,
             existing_lines_info,
         )
-        lines = cls.process_lines_input(
-            info,
-            checkout,
-            variants,
-            input_lines_data,
-            checkout_info,
-        )
+        with maky_b2b_guarded_change(checkout):
+            lines = cls.process_lines_input(
+                info,
+                checkout,
+                variants,
+                input_lines_data,
+                checkout_info,
+            )
 
-        shipping_update_fields = mark_checkout_deliveries_as_stale_if_needed(
-            checkout_info.checkout, lines
-        )
-        invalidate_update_fields = invalidate_checkout(
-            checkout_info, lines, manager, save=False
-        )
-        update_fields = shipping_update_fields + invalidate_update_fields
-        cls.mark_search_vectors_as_dirty(checkout, update_fields)
-        checkout.save(update_fields=update_fields)
+            shipping_update_fields = mark_checkout_deliveries_as_stale_if_needed(
+                checkout_info.checkout, lines
+            )
+            invalidate_update_fields = invalidate_checkout(
+                checkout_info, lines, manager, save=False
+            )
+            update_fields = shipping_update_fields + invalidate_update_fields
+            cls.mark_search_vectors_as_dirty(checkout, update_fields)
+            checkout.save(update_fields=update_fields)
         call_checkout_info_event(
             manager,
             event_name=WebhookEventAsyncType.CHECKOUT_UPDATED,

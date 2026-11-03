@@ -17,6 +17,7 @@ from ...plugins.dataloaders import get_plugin_manager_promise
 from ..types import Checkout, CheckoutLine
 from .utils import (
     get_checkout,
+    maky_b2b_guarded_change,
     mark_checkout_deliveries_as_stale_if_needed,
 )
 
@@ -78,25 +79,26 @@ class CheckoutLineDelete(BaseMutation):
                 code=CheckoutErrorCode.NON_REMOVABLE_GIFT_LINE.value,
             )
 
-        if line and line in checkout.lines.all():
-            line.delete()
+        with maky_b2b_guarded_change(checkout):
+            if line and line in checkout.lines.all():
+                line.delete()
 
-        manager = get_plugin_manager_promise(info.context).get()
-        lines, _ = fetch_checkout_lines(checkout)
-        checkout_info = fetch_checkout_info(checkout, lines, manager)
+            manager = get_plugin_manager_promise(info.context).get()
+            lines, _ = fetch_checkout_lines(checkout)
+            checkout_info = fetch_checkout_info(checkout, lines, manager)
 
-        shipping_update_fields = mark_checkout_deliveries_as_stale_if_needed(
-            checkout_info.checkout, lines
-        )
-        invalidate_update_fields = invalidate_checkout(
-            checkout_info, lines, manager, save=False
-        )
-        checkout.search_index_dirty = True
-        checkout.save(
-            update_fields=shipping_update_fields
-            + invalidate_update_fields
-            + ["search_index_dirty"]
-        )
+            shipping_update_fields = mark_checkout_deliveries_as_stale_if_needed(
+                checkout_info.checkout, lines
+            )
+            invalidate_update_fields = invalidate_checkout(
+                checkout_info, lines, manager, save=False
+            )
+            checkout.search_index_dirty = True
+            checkout.save(
+                update_fields=shipping_update_fields
+                + invalidate_update_fields
+                + ["search_index_dirty"]
+            )
         call_checkout_info_event(
             manager,
             event_name=WebhookEventAsyncType.CHECKOUT_UPDATED,

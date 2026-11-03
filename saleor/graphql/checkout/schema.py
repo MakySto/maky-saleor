@@ -19,6 +19,8 @@ from ..payment.mutations import CheckoutPaymentCreate
 from .filters import CheckoutFilterInput
 from .mutations import (
     CheckoutAddPromoCode,
+    CheckoutB2bPaymentLockRelease,
+    CheckoutB2bTaxAttestationUpdate,
     CheckoutBillingAddressUpdate,
     CheckoutComplete,
     CheckoutCreate,
@@ -126,6 +128,8 @@ class CheckoutQueries(graphene.ObjectType):
 
 class CheckoutMutations(graphene.ObjectType):
     checkout_add_promo_code = CheckoutAddPromoCode.Field()
+    checkout_b2b_tax_attestation_update = CheckoutB2bTaxAttestationUpdate.Field()
+    checkout_b2b_payment_lock_release = CheckoutB2bPaymentLockRelease.Field()
     checkout_billing_address_update = CheckoutBillingAddressUpdate.Field()
     checkout_complete = CheckoutComplete.Field()
     checkout_create = CheckoutCreate.Field()

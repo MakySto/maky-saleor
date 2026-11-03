@@ -205,12 +205,16 @@ class OrderCreateFromCheckout(BaseMutation):
         if cls._meta.support_meta_field and metadata is not None:
             cls.check_metadata_permissions(info, id)
             cls.create_metadata_from_graphql_input(
-                metadata, error_field_name="metadata"
+                metadata,
+                error_field_name="metadata",
+                allow_maky_b2b_input_key=False,
             )
         if cls._meta.support_private_meta_field and private_metadata is not None:
             cls.check_metadata_permissions(info, id, private=True)
+            # MAKY-B2B-V1: validate the private list itself (upstream passed
+            # the public one here).
             cls.create_metadata_from_graphql_input(
-                metadata, error_field_name="private_metadata"
+                private_metadata, error_field_name="private_metadata", private=True
             )
 
         manager = get_plugin_manager_promise(info.context).get()

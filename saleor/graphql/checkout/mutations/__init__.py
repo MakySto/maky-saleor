@@ -1,4 +1,6 @@
 from .checkout_add_promo_code import CheckoutAddPromoCode
+from .checkout_b2b_payment_lock_release import CheckoutB2bPaymentLockRelease
+from .checkout_b2b_tax_attestation_update import CheckoutB2bTaxAttestationUpdate
 from .checkout_billing_address_update import CheckoutBillingAddressUpdate
 from .checkout_complete import CheckoutComplete
 from .checkout_create import CheckoutCreate
@@ -21,6 +23,8 @@ from .order_create_from_checkout import OrderCreateFromCheckout
 
 __all__ = [
     "CheckoutAddPromoCode",
+    "CheckoutB2bPaymentLockRelease",
+    "CheckoutB2bTaxAttestationUpdate",
     "CheckoutBillingAddressUpdate",
     "CheckoutComplete",
     "CheckoutCreate",

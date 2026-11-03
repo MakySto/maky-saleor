@@ -35,6 +35,9 @@ class CheckoutErrorCode(Enum):
     NON_REMOVABLE_GIFT_LINE = "non_removable_gift_line"
     SHIPPING_CHANGE_FORBIDDEN = "shipping_change_forbidden"
     MISSING_ADDRESS_DATA = "missing_address_data"
+    # MAKY-B2B-V1
+    B2B_CHECKOUT_LOCKED = "b2b_checkout_locked"
+    B2B_TAX_CONTEXT_CHANGED = "b2b_tax_context_changed"
 
 
 class OrderCreateFromCheckoutErrorCode(Enum):
@@ -52,6 +55,9 @@ class OrderCreateFromCheckoutErrorCode(Enum):
     NO_LINES = "no_lines"
     EMAIL_NOT_SET = "email_not_set"
     UNAVAILABLE_VARIANT_IN_CHANNEL = "unavailable_variant_in_channel"
+    # MAKY-B2B-V1
+    INVALID = "invalid"
+    B2B_TAX_CONTEXT_CHANGED = "b2b_tax_context_changed"
 
 
 class CheckoutCreateFromOrderErrorCode(Enum):
@@ -69,3 +75,22 @@ class CheckoutCreateFromOrderUnavailableVariantErrorCode(Enum):
     PRODUCT_NOT_PUBLISHED = "product_not_published"
     QUANTITY_GREATER_THAN_LIMIT = "quantity_greater_than_limit"
     INSUFFICIENT_STOCK = "insufficient_stock"
+
+
+class CheckoutB2bPaymentLockReleaseErrorCode(Enum):
+    """MAKY-B2B-V1 error codes of `checkoutB2bPaymentLockRelease`."""
+
+    GRAPHQL_ERROR = "graphql_error"
+    NOT_FOUND = "not_found"
+
+
+class CheckoutB2bTaxAttestationErrorCode(Enum):
+    """MAKY-B2B-V1 error codes of `checkoutB2bTaxAttestationUpdate`."""
+
+    GRAPHQL_ERROR = "graphql_error"
+    INVALID = "invalid"
+    NOT_FOUND = "not_found"
+    STALE_CONTEXT = "stale_context"
+    INVALID_ATTESTATION = "invalid_attestation"
+    CHECKOUT_LOCKED = "checkout_locked"
+    UNMANAGED_EXEMPTION_CONFLICT = "unmanaged_exemption_conflict"

@@ -38,7 +38,7 @@ class UpdatePrivateMetadata(BaseMetadataMutation):
             metadata_list = data.pop("input")
 
             cls.create_metadata_from_graphql_input(
-                metadata_list, error_field_name="input"
+                metadata_list, error_field_name="input", private=True
             )
 
             items = {data.key: data.value for data in metadata_list}

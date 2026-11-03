@@ -24,6 +24,7 @@ from ...plugins.dataloaders import get_plugin_manager_promise
 from ..types import Checkout
 from .utils import (
     get_checkout,
+    maky_b2b_guarded_change,
     mark_checkout_deliveries_as_stale_if_needed,
 )
 
@@ -100,25 +101,28 @@ class CheckoutAddPromoCode(BaseMutation):
 
         checkout_info = fetch_checkout_info(checkout, lines, manager)
 
-        add_promo_code_to_checkout(
-            manager,
-            checkout_info,
-            lines,
-            promo_code,
-        )
+        with maky_b2b_guarded_change(checkout, field="promo_code"):
+            add_promo_code_to_checkout(
+                manager,
+                checkout_info,
+                lines,
+                promo_code,
+            )
 
-        shipping_update_fields = mark_checkout_deliveries_as_stale_if_needed(
-            checkout_info.checkout, lines
-        )
+            shipping_update_fields = mark_checkout_deliveries_as_stale_if_needed(
+                checkout_info.checkout, lines
+            )
 
-        invalidate_update_fields = invalidate_checkout(
-            checkout_info,
-            lines,
-            manager,
-            recalculate_discount=False,
-            save=False,
-        )
-        checkout.save(update_fields=shipping_update_fields + invalidate_update_fields)
+            invalidate_update_fields = invalidate_checkout(
+                checkout_info,
+                lines,
+                manager,
+                recalculate_discount=False,
+                save=False,
+            )
+            checkout.save(
+                update_fields=shipping_update_fields + invalidate_update_fields
+            )
         call_checkout_info_event(
             manager=manager,
             event_name=WebhookEventAsyncType.CHECKOUT_UPDATED,

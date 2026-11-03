@@ -7,3 +7,4 @@ from .checkout_with_discount import *  # noqa: F403
 from .checkout_with_payment import *  # noqa: F403
 from .checkout_with_prices import *  # noqa: F403
 from .checkout_with_transaction import *  # noqa: F403
+from .maky_b2b import *  # noqa: F403
