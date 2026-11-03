@@ -21,7 +21,7 @@ Sú to **tri samostatné nasadenia**. Nezamieňaj ich.
 | Kde beží | VPS `/opt/saleor`, systemd | S3 + CloudFront | **iný stroj**, `/opt/storefront` |
 | Verejne | `api.maky.store` | `dashboard.maky.store` | `maky.store` |
 | Ako sa aktualizuje | kód + venv + DB migrácie | build → upload do S3 prefixu | vlastný deploy storefront vlákna |
-| Verzia dnes | **3.23.31** | **3.23.32** | commit `3089012` pripravený, **nenasadený** |
+| Verzia dnes | **3.23.31** + MAKY-B2B-V1 (`8ffed5e`, režim `off`) | **3.23.32** | commit `3089012` pripravený, **nenasadený** |
 
 Rýchle overenie **Core a Dashboardu** (storefront nie — ten má vlastný stroj a vlákno, viď §5):
 
@@ -52,11 +52,13 @@ ukážok ani z reklamných odkazov v Dashboarde.
 | Hostname | `ip-10-0-1-115` | [overené] |
 | Produkčný adresár | `/opt/saleor` | [overené] |
 | Vetva | `maky-production-patches-v3.23.31` | [overené] |
-| **Commit kódu** | `91f50fc4b99eb199471abb10116ba5324c376342` | [overené] |
+| **Commit kódu** | `8ffed5e7bb0bb1cf344206618859b9d096572267` (od 2026-11-03, §12) | [overené] |
+| Predchádzajúci kód | `1f888cf4cc` = `91f50fc4b9` + docs; vetva `maky-rollback-pre-b2b` v `/opt/saleor` | [overené] |
 | Verzia | `3.23.31` | [overené] |
 
-> Vetva môže byť pred `91f50fc4b9` o commity, ktoré menia **iba dokumentáciu**
-> (napr. tento súbor). Kódový stav nasadenej 3.23.31 určuje `91f50fc4b9`.
+> Vetva môže byť pred živým commitom o commity, ktoré menia **iba dokumentáciu**
+> (napr. tento súbor). Kódový stav určuje commit v tabuľke vyššie (do 2026-11-03
+> `91f50fc4b9`).
 > Pri porovnávaní použi `git diff 91f50fc4b9..HEAD --stat` — ak sú tam len `docs/`
 > a `AGENTS.md`, nasadený kód sa nezmenil a netreba reštart.
 | Aktívny venv | `/opt/saleor-venvs/saleor-GPHclGPK-py3.12` | [overené] |
@@ -110,6 +112,10 @@ Pracovný repozitár a jeho worktrees [overené]:
 ```
 
 ### 1.2 🔴 Otvorené riziko: patche nie sú na GitHube
+
+> **Aktualizácia 2026-11-03:** `maky-production-patches-v3.23.31` už na
+> `MakySto/maky-saleor` je (PR #16 do nej zlúčený, produkcia z nej stiahnutá). Stav
+> `...-v3.22.68` neoverený.
 
 **Ani `maky-production-patches-v3.22.68`, ani `...-v3.23.31` nie sú pushnuté na
 `MakySto/maky-saleor`.** [overené — `git ls-remote --heads backup`]
@@ -456,7 +462,7 @@ Nezapisuj ako hotové len preto, že API vracia 200.
 | RDS bod obnovy a skúšobná obnova | NOT_VERIFIED — rola nemá `rds:DescribeDBInstances` |
 | Detekcia zdieľaných hodnôt atribútov (upstream PR #19510) | NOT_RUN |
 | **Rotácia uniknutého JWT RSA kľúča a RDS hesla** | **NOT_DONE — otvorené** |
-| Push MAKY vetiev na GitHub | **NOT_DONE — viď §1.2** |
+| Push MAKY vetiev na GitHub | v3.23.31 hotovo (2026-11-03); v3.22.68 NOT_VERIFIED — §1.2 |
 
 ---
 
@@ -547,7 +553,7 @@ a po úspešnom nasadení sa dá zmazať.
 
 ---
 
-## 12. B2B oslobodenie DPH (MAKY-B2B-V1) — 2026-11-02, NENASADENÉ
+## 12. B2B oslobodenie DPH (MAKY-B2B-V1) — NASADENÉ 2026-11-03 v režime `off`
 
 Vetva `maky-b2b-vat-exemption-v3.23.31` (nad `maky-production-patches-v3.23.31`).
 Bez migrácií a nových závislostí; nový `.env` prepínač `MAKY_B2B_VAT_EXEMPTION_MODE`
@@ -558,4 +564,37 @@ B2B platbami. PR #16 obsahuje aj zosúladenie `uv.lock` s `pyproject.toml`
 (gunicorn, setuptools, vcrpy 8 z §3.1) — iba lock pre CI, produkčný venv sa nemení.
 Stripe app potrebuje webhook `TRANSACTION_CANCELATION_REQUESTED` (obnova zámku). Kontrakt: [MAKY-B2B-V1-CONTRACT.md](MAKY-B2B-V1-CONTRACT.md),
 nasadenie/vypnutie/rollback: [MAKY-B2B-V1-OPERATIONS.md](MAKY-B2B-V1-OPERATIONS.md).
-Po nasadení doplň §0–§1 (nový kódový SHA).
+
+### 12.1 Nasadenie 2026-11-03 [overené]
+
+- Schválil Marek (karta v projekte, 2026-11-03 06:31 UTC). PR #16 zlúčený ako
+  merge commit `8ffed5e` do `maky-production-patches-v3.23.31` (CI zelené na `dc27e8d`).
+- Živý stav pred nasadením: `/opt/saleor` na `1f888cf`, čistý strom (iba nesledovaný
+  `poetry.lock.pre-3.22.68`), služby od 2026-10-24 bez reštartu, `.env` bez kľúčov
+  `MAKY_B2B_*` (= režim `off`). `.env` sa nemenil.
+- Postup: Claude Code na VPS nie je; Marek vkladal bloky príkazov do terminálu
+  VS Code (SSH `maky-saleor`). Namiesto bundlu (§3.4) priamy fetch z verejného repa
+  (`sudo -u saleor git -C /opt/saleor fetch https://github.com/MakySto/maky-saleor.git
+  maky-production-patches-v3.23.31:refs/heads/maky-candidate-b2b`), záložná vetva
+  `maky-rollback-pre-b2b` = `1f888cf`.
+- Preflight v `/tmp/saleor-preflight-b2b` cez `systemd-run --uid=saleor
+  -p EnvironmentFile=/opt/saleor/.env` s aktívnym venv `saleor-GPHclGPK-py3.12`:
+  `check` bez chýb, `makemigrations --check` *No changes detected*, `migrate --plan`
+  *No planned migration operations*, `MODE off`. Zo súborov mimo kódu iba
+  `pyproject.toml` (deptry) a `uv.lock`.
+- Okno 12:39:25 UTC: `git merge --ff-only maky-candidate-b2b`, reštart
+  `saleor-celerybeat` → `saleor` → (5 s) → `saleor-celery`.
+- Read-back: HEAD `8ffed5e`, tri služby `active`, `NRestarts=0`, `MODE off`,
+  `https://api.maky.store/graphql/` vracia typ `B2bTaxState`, v journale od okna
+  žiadny `ERROR`/`CRITICAL`/`Traceback`.
+
+**Návrat pri tomto stave** (režim `off`, B2B app token ešte nie je nasadený, takže
+žiadny checkout nemôže byť spravovaný): najprv krížová kontrola z OPERATIONS §5
+(SQL počet `maky.b2b.state.v1` = 0), potom
+`sudo -u saleor git -C /opt/saleor reset -q --hard maky-rollback-pre-b2b` a reštart
+troch služieb v rovnakom poradí. Keď už existuje spravovaný checkout, platí celý
+postup OPERATIONS §5 (`drain`, `maky_b2b_rollback check`).
+
+Ďalej: storefront musí pred zapnutím dopojiť `checkoutB2bPaymentLockRelease`
+(CONTRACT §0), B2B app token a spoločný test v Stripe test mode (OPERATIONS §8).
+

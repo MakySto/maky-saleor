@@ -1,7 +1,8 @@
 # MAKY-B2B-V1 — kontrakt backend ↔ storefront
 
 **Stav:** implementované v `maky-saleor`, vetva `maky-b2b-vat-exemption-v3.23.31`
-(základ `maky-production-patches-v3.23.31`), PR #16. Nenasadené.
+(základ `maky-production-patches-v3.23.31`), PR #16 zlúčený ako `8ffed5e`.
+**Nasadené 2026-11-03 v režime `off`** (backend; B2B sa zatiaľ nikomu neponúka).
 **Revízia 2** (opravy po posudku, 2. 11. 2026) — zmeny oproti commitu `68ca91a` sú
 zhrnuté v §0. Názvy a význam existujúcich polí sa nemenia.
 **Pre koho:** relácia *MAKY.STORE - Storefront 4.5*. Toto je jediný záväzný opis
