@@ -55,7 +55,10 @@ v prostredí služby).
 `TRANSACTION_CANCELATION_REQUESTED` (a oprávnenie `HANDLE_PAYMENTS`). Over v
 Dashboarde → Apps → Stripe → Webhooks pred zapnutím B2B.
 
-## 3. Nasadenie (návrh, čaká na schválenie)
+## 3. Nasadenie
+
+**Vykonané 2026-11-03 v režime `off`** (commit `8ffed5e`); záznam a konkrétne príkazy
+sú v MAKY-DEPLOYMENT §12.1. Postup pre ďalšie nasadenie:
 
 Predpoklad: skontrolovať živý stav podľa MAKY-DEPLOYMENT §0 a §1 (živý SHA,
 venv, služby). Nepredpokladať, že `91f50fc4b9` je stále živý kód.
@@ -76,7 +79,8 @@ venv, služby). Nepredpokladať, že `91f50fc4b9` je stále živý kód.
 
 Zapnutie (koordinovane, po spoločnom teste v Stripe test mode §8 a preflighte
 storefrontu s tokenom): `MAKY_B2B_VAT_EXEMPTION_MODE=on` + reštart troch služieb, potom
-storefront `B2B_CHECKOUT_UI_ENABLED=true`.
+storefront `B2B_CHECKOUT_UI_ENABLED=true`. **Vykonané 2026-11-03 19:10 UTC**, na
+Marekovo rozhodnutie bez spoločného testu §8; záznam v MAKY-DEPLOYMENT §12.2.
 
 ## 4. Vypnutie
 
