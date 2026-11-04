@@ -11,7 +11,12 @@ from django.utils import timezone
 from freezegun import freeze_time
 from prices import Money
 
-from ....checkout import maky_b2b, maky_b2b_payment, maky_b2b_rollback
+from ....checkout import (
+    maky_b2b,
+    maky_b2b_invoice,
+    maky_b2b_payment,
+    maky_b2b_rollback,
+)
 from ....checkout.calculations import fetch_checkout_data
 from ....checkout.error_codes import CheckoutErrorCode
 from ....checkout.fetch import fetch_checkout_info, fetch_checkout_lines
@@ -95,6 +100,14 @@ SK_ADDRESS = {
 
 def _id(checkout):
     return graphene.Node.to_global_id("Checkout", checkout.token)
+
+
+def _invoice_rows(order) -> dict:
+    return {
+        key: value
+        for key, value in order.private_metadata.items()
+        if key.startswith(maky_b2b_invoice.INVOICE_KEY_PREFIX)
+    }
 
 
 @pytest.fixture
@@ -293,6 +306,8 @@ def test_complete_creates_order_with_exempt_snapshot(
     assert snapshot["frozenPaymentSnapshot"] is True
     assert snapshot["attestation"]["status"] == maky_b2b.VerificationStatus.VALID
     assert snapshot["paymentLock"]["totalGross"] == "126.00"
+    assert _invoice_rows(order) == maky_b2b_invoice.invoice_fields(snapshot)
+    assert order.private_metadata[maky_b2b_invoice.KEY_VAT_ID] == MAKY_B2B_VAT_ID
 
 
 @mock.patch("saleor.plugins.manager.PluginsManager.transaction_initialize_session")
@@ -747,6 +762,7 @@ def test_taxed_company_order_stores_company_snapshot(
     assert snapshot["decision"] == maky_b2b.Decision.TAXED_UNVERIFIED
     assert snapshot["companyName"] == MAKY_B2B_COMPANY
     assert snapshot["managed"] is False
+    assert _invoice_rows(order) == maky_b2b_invoice.invoice_fields(snapshot)
 
 
 # ---------------------------------------------------------------------------
