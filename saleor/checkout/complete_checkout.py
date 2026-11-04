@@ -65,7 +65,7 @@ from ..warehouse.availability import check_stock_and_preorder_quantity_bulk
 from ..warehouse.management import allocate_preorders, allocate_stocks
 from ..warehouse.models import Reservation, Stock
 from ..warehouse.reservations import is_reservation_enabled
-from . import AddressType, maky_b2b
+from . import AddressType, maky_b2b, maky_b2b_invoice
 from .base_calculations import (
     base_checkout_delivery_price,
     base_checkout_undiscounted_delivery_price,
@@ -888,6 +888,7 @@ def _create_order(
         order.private_metadata = {
             **(order.private_metadata or {}),
             maky_b2b.ORDER_SNAPSHOT_KEY: maky_b2b_snapshot,
+            **maky_b2b_invoice.invoice_fields(maky_b2b_snapshot),
         }
 
     update_order_charge_data(order, with_save=False)
@@ -1505,6 +1506,7 @@ def _create_order_from_checkout(
     private_metadata = dict(checkout_metadata.private_metadata or {})
     if maky_b2b_snapshot:
         private_metadata[maky_b2b.ORDER_SNAPSHOT_KEY] = maky_b2b_snapshot
+        private_metadata.update(maky_b2b_invoice.invoice_fields(maky_b2b_snapshot))
 
     # order
     order = Order.objects.create(  # type: ignore[misc] # see below:

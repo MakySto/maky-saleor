@@ -164,7 +164,37 @@ WHERE private_metadata ? 'maky.b2b.state.v1'
 
 ## 6. Údaje pre ručnú faktúru
 
-Dashboard → Playground (`<>`), staff s `MANAGE_ORDERS`:
+**V Dashboarde:** detail objednávky → *Private metadata*. Každá firemná objednávka
+(existuje `maky.b2b.order.v1`) má čitateľné riadky `maky.b2b.faktura.01 …` až
+`… 09 Záznam`, v poradí na čítanie:
+
+| Riadok | Obsah |
+|---|---|
+| `01 Daňový režim` | `EU_ICS_43` = oslobodené podľa § 43 ods. 1 písm. a); inak „S DPH – dôvod (rozhodnutie)“ alebo vývoz |
+| `02 IČ DPH odberateľa` | IČ DPH zo vstupu zákazníka |
+| `03 Overenie VIES` | stav, čas overenia (UTC), overené IČ DPH, číslo konzultácie, názov vo VIES a zhoda s obchodným menom |
+| `04 Obchodné meno`, `05 Fakturačná adresa`, `06 Dodacia adresa` | z objednávky v čase vytvorenia; pri osobnom odbere výdajné miesto |
+| `07 IČO / registračné číslo`, `08 DIČ / daňové číslo` | iba to, čo zadal zákazník; inak „— (nezadané)“, nič sa nedopĺňa |
+| `09 Záznam` | platnosť podpisu záznamu, čas zápisu, rozhodnutie, verzia politiky |
+
+Riadky sú odvodené zo záznamu `maky.b2b.order.v1`, ktorý ostáva jediným zdrojom
+pravdy a nemení sa. Sú v chránenom mennom priestore `maky.b2b.` (bežné metadata
+mutácie ich nezmenia ani nezmažú). „PODPIS NESEDÍ“ v riadku `09` = záznam bol
+zmenený mimo backendu; údaje nepoužívaj bez kontroly.
+
+Objednávky vytvorené pred touto verziou riadky nemajú. Doplní ich príkaz (bez
+`--apply` iba vypíše, čo by zmenil; mení iba riadky `maky.b2b.faktura.*`):
+
+```bash
+manage.py maky_b2b_invoice_fields            # výpis: order=… decision=… rows=MISSING|OUTDATED|CURRENT
+manage.py maky_b2b_invoice_fields --apply    # zápis, po dávkach pod zámkom objednávky
+```
+
+Známe obmedzenie (aj predtým): Dashboard pri úprave *Private metadata* posiela
+všetky kľúče, takže úprava privátnych metadát firemnej objednávky v Dashboarde
+skončí chybou o rezervovanom mennom priestore. Na B2B údaje to nemá vplyv.
+
+**Celý záznam:** Dashboard → Playground (`<>`), staff s `MANAGE_ORDERS`:
 
 ```graphql
 query OrderB2b($number: String!) {
